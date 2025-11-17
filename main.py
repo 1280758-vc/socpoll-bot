@@ -15,7 +15,7 @@ API_TOKEN = "8330526731:AAGrxqGzS8VBCGMBkJ6cjjLvmfPXB-j-7ck"
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-ADMIN_IDS = [твій_telegram_id]  # <-- Заміни на свій id для адмін-прав (можеш подивитися свій id у @userinfobot)
+ADMIN_IDS = [383222956]  # <-- user_id адміністратора!
 
 ### --- База даних --- ###
 async def db_setup():
