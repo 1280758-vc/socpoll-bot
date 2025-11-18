@@ -131,16 +131,3 @@ async def select_qtype(message: types.Message):
 async def input_qtext(message: types.Message):
     user_steps[message.from_user.id]["q_partial"]["question"] = message.text
     qtype = user_steps[message.from_user.id]["q_partial"]["type"]
-    if qtype == "Текст":
-        user_steps[message.from_user.id]["questions"].append({
-            "type": "text",
-            "question": message.text
-        })
-        await finish_q_add(message)
-    elif qtype in ["Один варіант", "Мультиваріант"]:
-        await message.answer("Введіть варіанти відповіді (через кому):")
-    elif qtype == "Шкала":
-        await message.answer("Введіть межі шкали (наприклад: 1, 11):")
-
-@dp.message(lambda msg: "q_partial" in user_steps.get(msg.from_user.id, {}) and user_steps[msg.from_user.id]["q_partial"].get("type") in ["Один варіант", "Мультиваріант"] and "question" in user_steps[msg.from_user.id]["q_partial"] and "options" not in user_steps[msg.from_user.id]["q_partial"])
-async def input_options(message: types.Message):
