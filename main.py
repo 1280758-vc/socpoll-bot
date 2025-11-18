@@ -10,7 +10,7 @@ from aiogram.types import (
 )
 from aiogram.filters import Command, CommandObject
 
-API_TOKEN = "8330526731:AAFK3hBMI4L3BvmrXpp7NlDPFYDK98EMuSE"
+API_TOKEN = "8330526731:AAGYuMWrjEbveAKsYsNp7KlZ3A8CBKNROhg"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
