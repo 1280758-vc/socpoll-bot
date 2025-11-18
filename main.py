@@ -17,6 +17,9 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 ADMIN_IDS = [383222956]  # <-- user_id адміністратора!
 
+# Глобальний словник для кроків користувача
+user_steps = {}
+
 ### --- База даних --- ###
 async def db_setup():
     async with aiosqlite.connect("socbot.db") as db:
@@ -58,8 +61,10 @@ async def db_setup():
 ### --- Реєстрація, демографія --- ###
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("Поділитися номером", request_contact=True))
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Поділитися номером", request_contact=True)]],
+        resize_keyboard=True
+    )
     await message.answer(
         "👋 Вітаємо у боті для соціологічних опитувань!\n"
         "1. Для роботи поділіться, будь ласка, вашим номером телефона:",
@@ -73,21 +78,20 @@ async def contact(message: types.Message):
     async with aiosqlite.connect("socbot.db") as db:
         await db.execute("INSERT OR IGNORE INTO users (user_id, phone) VALUES (?,?)", (user_id, phone))
         await db.commit()
-    await ask_demography(message)
-
-async def ask_demography(message):
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("Чоловік", "Жінка")
+    user_steps[user_id] = {"demostep": "sex"}
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Чоловік")], [KeyboardButton(text="Жінка")]],
+        resize_keyboard=True
+    )
     await message.answer("Ваша стать?", reply_markup=kb)
-    dp.data[str(message.from_user.id)] = {"demostep": "sex"}
 
 @dp.message()
 async def demodata(message: types.Message):
     user_id = message.from_user.id
-    key = str(user_id)
+    key = user_id
     # Демографія
-    if key in dp.data and dp.data[key].get("demostep"):
-        step = dp.data[key]["demostep"]
+    if key in user_steps and user_steps[key].get("demostep"):
+        step = user_steps[key]["demostep"]
         if step == "sex":
             if message.text not in ["Чоловік", "Жінка"]:
                 await message.answer("Оберіть одну відповідь!")
@@ -95,7 +99,7 @@ async def demodata(message: types.Message):
             async with aiosqlite.connect("socbot.db") as db:
                 await db.execute("UPDATE users SET sex=? WHERE user_id=?", (message.text, user_id))
                 await db.commit()
-            dp.data[key]["demostep"] = "birth"
+            user_steps[key]["demostep"] = "birth"
             await message.answer("Ваш рік народження?", reply_markup=ReplyKeyboardRemove())
             return
         if step == "birth":
@@ -108,15 +112,19 @@ async def demodata(message: types.Message):
             async with aiosqlite.connect("socbot.db") as db:
                 await db.execute("UPDATE users SET birth_year=? WHERE user_id=?", (year, user_id))
                 await db.commit()
-            dp.data[key]["demostep"] = "education"
-            kb = ReplyKeyboardMarkup(resize_keyboard=True)
-            kb.add(
-                "Середня",
-                "Неокончена вища",
-                "Вища",
-                "Учена ступінь",
-                "Неокончена середня",
-                "Середня спеціальна (коледж)"
+            user_steps[key]["demostep"] = "education"
+            kb = ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text=x)] for x in [
+                        "Середня",
+                        "Неокончена вища",
+                        "Вища",
+                        "Учена ступінь",
+                        "Неокончена середня",
+                        "Середня спеціальна (коледж)"
+                    ]
+                ],
+                resize_keyboard=True
             )
             await message.answer("Освіта?", reply_markup=kb)
             return
@@ -135,9 +143,13 @@ async def demodata(message: types.Message):
             async with aiosqlite.connect("socbot.db") as db:
                 await db.execute("UPDATE users SET education=? WHERE user_id=?", (message.text, user_id))
                 await db.commit()
-            dp.data[key]["demostep"] = "residence"
-            kb = ReplyKeyboardMarkup(resize_keyboard=True)
-            kb.add("Місто 1 млн +", "500000-1 млн", "300-500 тис", "100-200 тис", "5-50 тис", "Село")
+            user_steps[key]["demostep"] = "residence"
+            kb = ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text=x)] for x in [
+                    "Місто 1 млн +", "500000-1 млн", "300-500 тис", "100-200 тис", "5-50 тис", "Село"
+                ]],
+                resize_keyboard=True
+            )
             await message.answer("Місце проживання?", reply_markup=kb)
             return
         if step == "residence":
@@ -148,7 +160,7 @@ async def demodata(message: types.Message):
             async with aiosqlite.connect("socbot.db") as db:
                 await db.execute("UPDATE users SET residence=? WHERE user_id=?", (message.text, user_id))
                 await db.commit()
-            del dp.data[key]
+            del user_steps[key]
             await message.answer(
                 "Реєстрація завершена!\n"
                 "Ви можете отримати доступ до опитувань та переглядати свій баланс.\n"
@@ -158,8 +170,8 @@ async def demodata(message: types.Message):
     # Логіка опитувань далі ↓
 
     # --- ПРОХОДЖЕННЯ ОПИТУВАННЯ ---
-    if key in dp.data and dp.data[key].get("poll"):
-        ses = dp.data[key]["poll"]
+    if key in user_steps and user_steps[key].get("poll"):
+        ses = user_steps[key]["poll"]
         qobj = ses["questions"][ses["step"]]
         ans = message.text
 
@@ -194,7 +206,7 @@ async def demodata(message: types.Message):
                     (ses["amount"], user_id)
                 )
                 await db.commit()
-            del dp.data[key]["poll"]
+            del user_steps[key]["poll"]
             await message.answer("Дякуємо за участь! Винагорода зарахована на баланс. /balance")
             return
         # Показати наступне питання
@@ -286,7 +298,7 @@ async def poll_start(message: types.Message, command: CommandObject):
         await message.answer("Неправильний формат! Синтаксис: /poll 1")
         return
     user_id = message.from_user.id
-    key = str(user_id)
+    key = user_id
     async with aiosqlite.connect("socbot.db") as db:
         async with db.execute("SELECT title, amount, questions FROM surveys WHERE survey_id=?", (poll_id,)) as cursor:
             row = await cursor.fetchone()
@@ -294,32 +306,35 @@ async def poll_start(message: types.Message, command: CommandObject):
             await message.answer("Опитування не знайдено.")
             return
         _, amount, questions = row
-        dp.data[key] = {"poll": {
+        user_steps[key] = {"poll": {
             "poll_id": poll_id,
             "questions": json.loads(questions),
             "step": 0,
             "answers": [],
             "amount": amount
         }}
-    await ask_poll_question(message, dp.data[key]["poll"])
+    await ask_poll_question(message, user_steps[key]["poll"])
 
 async def ask_poll_question(message, ses):
     q = ses["questions"][ses["step"]]
     text = f"{q['question']}"
     kb = None
     if q.get('options'):
-        kb = ReplyKeyboardMarkup(resize_keyboard=True)
-        for opt in q['options']:
-            kb.add(opt)
+        kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=opt)] for opt in q['options']],
+            resize_keyboard=True
+        )
     elif q.get('scale'):
-        kb = ReplyKeyboardMarkup(resize_keyboard=True)
         rng = range(*q['scale']) if isinstance(q['scale'], list) else range(1, 12)
-        for i in rng:
-            kb.add(str(i))
+        kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=str(i))] for i in rng],
+            resize_keyboard=True
+        )
     elif q.get("type") == "multi":
-        kb = ReplyKeyboardMarkup(resize_keyboard=True)
-        for opt in q['options']:
-            kb.add(opt)
+        kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=opt)] for opt in q['options']],
+            resize_keyboard=True
+        )
         text += f"\n(Виберіть до {q.get('max', len(q['options']))} через кому)"
     await message.answer(text, reply_markup=kb or ReplyKeyboardRemove())
 
