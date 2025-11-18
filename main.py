@@ -16,7 +16,6 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 ADMIN_IDS = [383222956, 233536337]
-
 user_steps = {}
 
 ### --- База даних --- ###
@@ -215,6 +214,45 @@ async def finish_poll(message: types.Message):
         await message.answer("Недостатньо даних!")
     user_steps[message.from_user.id] = {"menu": "admin"}
 
+# --- РОЗСИЛКА ОПИТУВАНЬ З СПИСКОМ ---
+@dp.message(lambda msg: msg.text == "Розіслати опитування")
+async def choose_survey_to_send(message: types.Message):
+    async with aiosqlite.connect("socbot.db") as db:
+        async with db.execute("SELECT survey_id, title FROM surveys ORDER BY survey_id DESC LIMIT 10") as cursor:
+            items = await cursor.fetchall()
+    if not items:
+        await message.answer("Немає створених опитувань.")
+        return
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=f"{i[0]}: {i[1]}")] for i in items],
+        resize_keyboard=True
+    )
+    user_steps[message.from_user.id]["menu"] = "send_poll"
+    await message.answer("Оберіть опитування для розсилки:", reply_markup=kb)
+
+@dp.message(lambda msg: user_steps.get(msg.from_user.id, {}).get("menu") == "send_poll" and ":" in msg.text)
+async def send_selected_poll(message: types.Message):
+    poll_id = int(message.text.split(":")[0])
+    async with aiosqlite.connect("socbot.db") as db:
+        async with db.execute("SELECT title, amount FROM surveys WHERE survey_id=?", (poll_id,)) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            await message.answer("Опитування не знайдено.")
+            return
+        title, amount = row
+        async with db.execute("SELECT user_id FROM users") as cursor:
+            users = await cursor.fetchall()
+        for (uid,) in users:
+            try:
+                await bot.send_message(
+                    uid,
+                    f"🚩 Запрошення на опитування '{title}'\nВинагорода: {amount} грн.\nЩоб пройти, напишіть /poll {poll_id}"
+                )
+            except Exception:
+                pass
+    await message.answer(f"Опитування '{title}' розіслано всім учасникам.", reply_markup=admin_menu())
+    user_steps[message.from_user.id] = {"menu": "admin"}
+
 ### --- Реєстрація, демографія --- ###
 @dp.message(Command("start"))
 async def start(message: types.Message):
@@ -387,35 +425,6 @@ async def withdraw(message: types.Message):
         await db.commit()
     await message.answer(f"Заявку на вивід {bal:.2f} грн на номер {phone} прийнято. Адмін зв'яжеться для поповнення.")
 
-@dp.message(Command("sendpoll"))
-async def sendpoll(message: types.Message, command: CommandObject):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("Доступно лише адміністратору.")
-        return
-    try:
-        poll_id = int(command.args.strip())
-    except Exception:
-        await message.answer("Вкажіть ID опитування: /sendpoll 1")
-        return
-    async with aiosqlite.connect("socbot.db") as db:
-        async with db.execute("SELECT title, amount FROM surveys WHERE survey_id=?", (poll_id,)) as cursor:
-            row = await cursor.fetchone()
-        if not row:
-            await message.answer("Опитування не знайдено.")
-            return
-        title, amount = row
-        async with db.execute("SELECT user_id FROM users") as cursor:
-            users = await cursor.fetchall()
-        for (uid,) in users:
-            try:
-                await bot.send_message(
-                    uid,
-                    f"🚩 Запрошення на опитування '{title}'\nВинагорода: {amount} грн.\nЩоб пройти, напишіть /poll {poll_id}"
-                )
-            except Exception:
-                pass
-    await message.answer(f"Оголошення про опитування {poll_id} розіслано.")
-
 @dp.message(Command("poll"))
 async def poll_start(message: types.Message, command: CommandObject):
     try:
@@ -461,7 +470,7 @@ async def ask_poll_question(message: types.Message, ses):
             keyboard=[[KeyboardButton(text=opt)] for opt in q['options']],
             resize_keyboard=True
         )
-        text += f"\n(Виберіть до {q.get('max', len(q['options']))} через кому)"
+        text += f"\n(Виберіть до {q.get('max', len(qobj['options']))} через кому)"
     await message.answer(text, reply_markup=kb or ReplyKeyboardRemove())
 
 @dp.message(Command("export"))
