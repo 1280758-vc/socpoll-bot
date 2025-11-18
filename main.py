@@ -11,7 +11,6 @@ from aiogram.types import (
 from aiogram.filters import Command, CommandObject
 
 API_TOKEN = "8330526731:AAGYuMWrjEbveAKsYsNp7KlZ3A8CBKNROhg"
-
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
@@ -62,7 +61,19 @@ def admin_menu():
         keyboard=[
             [KeyboardButton(text="Створити опитування")],
             [KeyboardButton(text="Переглянути опитування")],
-            [KeyboardButton(text="Розіслати опитування")]
+            [KeyboardButton(text="Розіслати опитування")],
+            [KeyboardButton(text="Експорт")],
+        ],
+        resize_keyboard=True
+    )
+    return kb
+
+def user_menu():
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Переглянути баланс")],
+            [KeyboardButton(text="Доступні опитування")],
+            [KeyboardButton(text="Відмовитися від опитування")]
         ],
         resize_keyboard=True
     )
@@ -153,6 +164,8 @@ async def input_options(message: types.Message):
         "question": user_steps[message.from_user.id]["q_partial"]["question"],
         "options": opts
     }
+    if "Інше" in opts:
+        q["has_other"] = True
     if qtype == "Мультиваріант":
         await message.answer("Введіть максимум допустимих виборів (число):")
         user_steps[message.from_user.id]["q_partial"]["options"] = opts
@@ -244,9 +257,17 @@ async def send_selected_poll(message: types.Message):
             users = await cursor.fetchall()
         for (uid,) in users:
             try:
+                kb = ReplyKeyboardMarkup(
+                    keyboard=[
+                        [KeyboardButton(f"Почати опитування {poll_id}")],
+                        [KeyboardButton(text="Відмовитися від опитування")]
+                    ],
+                    resize_keyboard=True
+                )
                 await bot.send_message(
                     uid,
-                    f"🚩 Запрошення на опитування '{title}'\nВинагорода: {amount} грн.\nЩоб пройти, напишіть /poll {poll_id}"
+                    f"🚩 Запрошення на опитування '{title}'\nВинагорода: {amount} грн.",
+                    reply_markup=kb
                 )
             except Exception:
                 pass
@@ -358,31 +379,128 @@ async def demodata(message: types.Message):
             del user_steps[key]
             await message.answer(
                 "Реєстрація завершена!\n"
-                "Ви можете отримати доступ до опитувань та переглядати свій баланс.\n"
-                "Для цього використовуйте команду /balance."
+                "Ви можете отримати доступ до опитувань та переглядати свій баланс.",
+                reply_markup=user_menu()
             )
             return
-    # Опитування нижче ↓
-    if key in user_steps and user_steps[key].get("poll"):
+
+    # --- Меню для користувача ---
+    if message.text == "Переглянути баланс":
+        async with aiosqlite.connect("socbot.db") as db:
+            async with db.execute("SELECT balance FROM users WHERE user_id=?", (user_id,)) as cursor:
+                row = await cursor.fetchone()
+        bal = row[0] if row else 0
+        await message.answer(
+            f"Ваш баланс: {bal:.2f} грн",
+            reply_markup=user_menu()
+        )
+        return
+
+    # --- Доступні опитування ---
+    if message.text == "Доступні опитування":
+        async with aiosqlite.connect("socbot.db") as db:
+            async with db.execute("SELECT survey_id, title FROM surveys ORDER BY survey_id DESC LIMIT 5") as cursor:
+                items = await cursor.fetchall()
+        if not items:
+            await message.answer("Немає доступних опитувань.", reply_markup=user_menu())
+            return
+        kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=f"Почати опитування {i[0]}")] for i in items],
+            resize_keyboard=True
+        )
+        await message.answer(
+            "Оберіть дослідження:",
+            reply_markup=kb
+        )
+        return
+
+    # --- Почати опитування або з запрошення або з меню ---
+    if message.text.startswith("Почати опитування"):
+        try:
+            poll_id = int(message.text.split("Почати опитування")[1].strip())
+        except Exception:
+            await message.answer("Формат: Почати опитування <ID>")
+            return
+        key = user_id
+        async with aiosqlite.connect("socbot.db") as db:
+            async with db.execute("SELECT title, amount, questions FROM surveys WHERE survey_id=?", (poll_id,)) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                await message.answer("Опитування не знайдено.", reply_markup=user_menu())
+                return
+            _, amount, questions = row
+            user_steps[key] = {"poll": {
+                "poll_id": poll_id,
+                "questions": json.loads(questions),
+                "step": 0,
+                "answers": [],
+                "amount": amount,
+                "input_other": False
+            }}
+        await ask_poll_question(message, user_steps[key]["poll"])
+        return
+
+    # --- Відмовитися від опитування ---
+    if message.text == "Відмовитися від опитування":
+        await message.answer(
+            "Ви відмовилися від участі у поточному опитуванні.",
+            reply_markup=user_menu()
+        )
+        user_steps[user_id].pop("poll", None)
+        return
+
+    # --- Відповіді на питання опитування ---
+    if key in user_steps and "poll" in user_steps[key]:
         ses = user_steps[key]["poll"]
         qobj = ses["questions"][ses["step"]]
+
+        # Якщо чекаємо текст для "Інше"
+        if ses.get("input_other"):
+            ses["answers"].append(message.text)
+            ses["step"] += 1
+            ses["input_other"] = False
+            if ses["step"] >= len(ses["questions"]):
+                async with aiosqlite.connect("socbot.db") as db:
+                    await db.execute(
+                        "INSERT INTO answers (user_id, survey_id, answer_data) VALUES (?, ?, ?)",
+                        (user_id, ses["poll_id"], json.dumps(ses["answers"]))
+                    )
+                    await db.execute(
+                        "UPDATE users SET balance=balance+? WHERE user_id=?",
+                        (ses["amount"], user_id)
+                    )
+                    await db.commit()
+                del user_steps[key]["poll"]
+                kb = ReplyKeyboardMarkup(
+                    keyboard=[[KeyboardButton("Переглянути баланс")]],
+                    resize_keyboard=True
+                )
+                await message.answer(
+                    "Дякуємо за участь у дослідженні!\nВаша відповідь збережена.",
+                    reply_markup=kb
+                )
+                return
+            await ask_poll_question(message, ses)
+            return
+
+        # Базова логіка
         ans = message.text
+        # "multi"
         if qobj.get("type") == "multi":
             selected = [x.strip() for x in ans.split(",") if x.strip() in qobj["options"]]
             if len(selected) == 0 or len(selected) > qobj.get("max", len(qobj["options"])):
                 await message.answer(f"Виберіть від 1 до {qobj.get('max', len(qobj['options']))} варіантів, через кому!")
                 return
-            ans = selected
-        if qobj.get("type") == "radio" and "exclusive" in qobj:
-            if ans == qobj["exclusive"]:
-                ses["answers"].append(ans)
-                ses["step"] = len(ses["questions"])
-            else:
-                ses["answers"].append(ans)
-                ses["step"] += 1
+            ses["answers"].append(selected)
+        # "radio" + "Інше"
+        elif qobj.get("type") == "radio" and qobj.get("has_other") and ans == "Інше":
+            ses["input_other"] = True
+            await message.answer("Введіть ваш варіант відповіді:")
+            return
         else:
             ses["answers"].append(ans)
-            ses["step"] += 1
+
+        ses["step"] += 1
         if ses["step"] >= len(ses["questions"]):
             async with aiosqlite.connect("socbot.db") as db:
                 await db.execute(
@@ -395,60 +513,18 @@ async def demodata(message: types.Message):
                 )
                 await db.commit()
             del user_steps[key]["poll"]
-            await message.answer("Дякуємо за участь! Винагорода зарахована на баланс. /balance")
+            kb = ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton("Переглянути баланс")]],
+                resize_keyboard=True
+            )
+            await message.answer(
+                "Дякуємо за участь у дослідженні!\nВаша відповідь збережена.",
+                reply_markup=kb
+            )
             return
+
         await ask_poll_question(message, ses)
         return
-
-@dp.message(Command("balance"))
-async def balance(message: types.Message):
-    user_id = message.from_user.id
-    async with aiosqlite.connect("socbot.db") as db:
-        async with db.execute("SELECT balance FROM users WHERE user_id=?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-    bal = row[0] if row else 0
-    await message.answer(f"Баланс: {bal:.2f} грн\nМін. сума для виводу — 50 грн.\nЩоб подати заявку на вивід, напишіть /withdraw")
-
-@dp.message(Command("withdraw"))
-async def withdraw(message: types.Message):
-    user_id = message.from_user.id
-    async with aiosqlite.connect("socbot.db") as db:
-        async with db.execute("SELECT balance, phone FROM users WHERE user_id=?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-        bal = row[0] if row else 0
-        phone = row[1] if row else ""
-        if bal < 50:
-            await message.answer("Недостатньо коштів для виводу. Мінімум 50 грн.")
-            return
-        await db.execute("INSERT INTO payouts (user_id, amount, status) VALUES (?, ?, ?)", (user_id, bal, "pending"))
-        await db.execute("UPDATE users SET balance=0 WHERE user_id=?", (user_id,))
-        await db.commit()
-    await message.answer(f"Заявку на вивід {bal:.2f} грн на номер {phone} прийнято. Адмін зв'яжеться для поповнення.")
-
-@dp.message(Command("poll"))
-async def poll_start(message: types.Message, command: CommandObject):
-    try:
-        poll_id = int(command.args.strip())
-    except Exception:
-        await message.answer("Неправильний формат! Синтаксис: /poll 1")
-        return
-    user_id = message.from_user.id
-    key = user_id
-    async with aiosqlite.connect("socbot.db") as db:
-        async with db.execute("SELECT title, amount, questions FROM surveys WHERE survey_id=?", (poll_id,)) as cursor:
-            row = await cursor.fetchone()
-        if not row:
-            await message.answer("Опитування не знайдено.")
-            return
-        _, amount, questions = row
-        user_steps[key] = {"poll": {
-            "poll_id": poll_id,
-            "questions": json.loads(questions),
-            "step": 0,
-            "answers": [],
-            "amount": amount
-        }}
-    await ask_poll_question(message, user_steps[key]["poll"])
 
 async def ask_poll_question(message: types.Message, ses):
     q = ses["questions"][ses["step"]]
@@ -459,19 +535,26 @@ async def ask_poll_question(message: types.Message, ses):
             keyboard=[[KeyboardButton(text=opt)] for opt in q['options']],
             resize_keyboard=True
         )
+        if q.get("type") == "multi":
+            text += f"\n(Виберіть до {q.get('max', len(q['options']))} через кому)"
     elif q.get('scale'):
         rng = range(*q['scale']) if isinstance(q['scale'], list) else range(1, 12)
         kb = ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text=str(i))] for i in rng],
             resize_keyboard=True
         )
-    elif q.get("type") == "multi":
-        kb = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text=opt)] for opt in q['options']],
-            resize_keyboard=True
-        )
-        text += f"\n(Виберіть до {q.get('max', len(qobj['options']))} через кому)"
     await message.answer(text, reply_markup=kb or ReplyKeyboardRemove())
+
+@dp.message(lambda msg: msg.text == "Переглянути опитування")
+async def view_surveys(message: types.Message):
+    async with aiosqlite.connect("socbot.db") as db:
+        async with db.execute("SELECT survey_id, title FROM surveys ORDER BY survey_id DESC LIMIT 10") as cursor:
+            items = await cursor.fetchall()
+    if not items:
+        await message.answer("Немає створених опитувань.", reply_markup=admin_menu())
+        return
+    out = "\n".join([f"{i[0]}. {i[1]}" for i in items])
+    await message.answer(f"Останні опитування:\n{out}", reply_markup=admin_menu())
 
 @dp.message(Command("export"))
 async def export_answers(message: types.Message):
@@ -484,7 +567,6 @@ async def export_answers(message: types.Message):
     df.to_excel("export.xlsx", index=False)
     await message.answer_document(FSInputFile("export.xlsx"), caption="Результати опитувань (Excel)")
 
-### --- Запуск --- ###
 async def main():
     await db_setup()
     await dp.start_polling(bot)
