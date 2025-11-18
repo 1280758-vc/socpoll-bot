@@ -3,6 +3,7 @@ import asyncio
 import pandas as pd
 import aiosqlite
 import json
+import os
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import (
@@ -17,9 +18,11 @@ dp = Dispatcher()
 ADMIN_IDS = [383222956, 233536337]
 user_steps = {}
 
+DB_FILE = "socbot.db"
+
 ### --- База даних --- ###
 async def db_setup():
-    async with aiosqlite.connect("socbot.db") as db:
+    async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -55,14 +58,13 @@ async def db_setup():
         """)
         await db.commit()
 
-# --- Головне меню для адміна ---
 def admin_menu():
     kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Створити опитування")],
             [KeyboardButton(text="Переглянути опитування")],
             [KeyboardButton(text="Розіслати опитування")],
-            [KeyboardButton(text="Експорт")],
+            [KeyboardButton(text="Експорт")]
         ],
         resize_keyboard=True
     )
@@ -216,7 +218,7 @@ async def finish_q_add(message: types.Message):
 async def finish_poll(message: types.Message):
     data = user_steps.get(message.from_user.id, {})
     if "title" in data and "questions" in data and "amount" in data:
-        async with aiosqlite.connect("socbot.db") as db:
+        async with aiosqlite.connect(DB_FILE) as db:
             await db.execute(
                 "INSERT INTO surveys (title, amount, questions) VALUES (?, ?, ?)",
                 (data["title"], data["amount"], json.dumps(data["questions"]))
@@ -227,10 +229,10 @@ async def finish_poll(message: types.Message):
         await message.answer("Недостатньо даних!")
     user_steps[message.from_user.id] = {"menu": "admin"}
 
-# --- РОЗСИЛКА ОПИТУВАНЬ З СПИСКОМ ---
+# --- РОЗСИЛКА ОПИТУВАНЬ З СПИСКОМ І ФІЛЬТРОМ ---
 @dp.message(lambda msg: msg.text == "Розіслати опитування")
 async def choose_survey_to_send(message: types.Message):
-    async with aiosqlite.connect("socbot.db") as db:
+    async with aiosqlite.connect(DB_FILE) as db:
         async with db.execute("SELECT survey_id, title FROM surveys ORDER BY survey_id DESC LIMIT 10") as cursor:
             items = await cursor.fetchall()
     if not items:
@@ -244,17 +246,41 @@ async def choose_survey_to_send(message: types.Message):
     await message.answer("Оберіть опитування для розсилки:", reply_markup=kb)
 
 @dp.message(lambda msg: user_steps.get(msg.from_user.id, {}).get("menu") == "send_poll" and ":" in msg.text)
-async def send_selected_poll(message: types.Message):
+async def choose_filter_city(message: types.Message):
     poll_id = int(message.text.split(":")[0])
-    async with aiosqlite.connect("socbot.db") as db:
+    user_steps[message.from_user.id]["last_poll_id"] = poll_id
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton("Місто 1 млн +")],
+            [KeyboardButton("500000-1 млн")],
+            [KeyboardButton("300-500 тис")],
+            [KeyboardButton("100-200 тис")],
+            [KeyboardButton("5-50 тис")],
+            [KeyboardButton("Село")],
+            [KeyboardButton("Усі")]
+        ],
+        resize_keyboard=True
+    )
+    user_steps[message.from_user.id]["menu"] = "choose_city"
+    await message.answer("Оберіть фільтр (місто або 'Усі'):", reply_markup=kb)
+
+@dp.message(lambda msg: user_steps.get(msg.from_user.id, {}).get("menu") == "choose_city")
+async def send_filtered_poll(message: types.Message):
+    city = message.text
+    poll_id = user_steps[message.from_user.id].get("last_poll_id")
+    async with aiosqlite.connect(DB_FILE) as db:
+        if city == "Усі":
+            async with db.execute("SELECT user_id FROM users") as cursor:
+                users = await cursor.fetchall()
+        else:
+            async with db.execute("SELECT user_id FROM users WHERE residence=?", (city,)) as cursor:
+                users = await cursor.fetchall()
         async with db.execute("SELECT title, amount FROM surveys WHERE survey_id=?", (poll_id,)) as cursor:
             row = await cursor.fetchone()
         if not row:
             await message.answer("Опитування не знайдено.")
             return
         title, amount = row
-        async with db.execute("SELECT user_id FROM users") as cursor:
-            users = await cursor.fetchall()
         for (uid,) in users:
             try:
                 kb = ReplyKeyboardMarkup(
@@ -271,7 +297,7 @@ async def send_selected_poll(message: types.Message):
                 )
             except Exception:
                 pass
-    await message.answer(f"Опитування '{title}' розіслано всім учасникам.", reply_markup=admin_menu())
+    await message.answer(f"Опитування '{title}' розіслано фільтровано по '{city}'.", reply_markup=admin_menu())
     user_steps[message.from_user.id] = {"menu": "admin"}
 
 ### --- Реєстрація, демографія --- ###
@@ -291,7 +317,7 @@ async def start(message: types.Message):
 async def contact(message: types.Message):
     phone = message.contact.phone_number
     user_id = message.from_user.id
-    async with aiosqlite.connect("socbot.db") as db:
+    async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("INSERT OR IGNORE INTO users (user_id, phone) VALUES (?,?)", (user_id, phone))
         await db.commit()
     user_steps[user_id] = {"demostep": "sex"}
@@ -312,7 +338,7 @@ async def demodata(message: types.Message):
             if message.text not in ["Чоловік", "Жінка"]:
                 await message.answer("Оберіть одну відповідь!")
                 return
-            async with aiosqlite.connect("socbot.db") as db:
+            async with aiosqlite.connect(DB_FILE) as db:
                 await db.execute("UPDATE users SET sex=? WHERE user_id=?", (message.text, user_id))
                 await db.commit()
             user_steps[key]["demostep"] = "birth"
@@ -325,7 +351,7 @@ async def demodata(message: types.Message):
             except Exception:
                 await message.answer("Вкажіть рік народження (числом)!")
                 return
-            async with aiosqlite.connect("socbot.db") as db:
+            async with aiosqlite.connect(DB_FILE) as db:
                 await db.execute("UPDATE users SET birth_year=? WHERE user_id=?", (year, user_id))
                 await db.commit()
             user_steps[key]["demostep"] = "education"
@@ -356,7 +382,7 @@ async def demodata(message: types.Message):
             if message.text not in edukey:
                 await message.answer("Оберіть з варіантів!")
                 return
-            async with aiosqlite.connect("socbot.db") as db:
+            async with aiosqlite.connect(DB_FILE) as db:
                 await db.execute("UPDATE users SET education=? WHERE user_id=?", (message.text, user_id))
                 await db.commit()
             user_steps[key]["demostep"] = "residence"
@@ -373,20 +399,19 @@ async def demodata(message: types.Message):
             if message.text not in reskey:
                 await message.answer("Оберіть з варіантів!")
                 return
-            async with aiosqlite.connect("socbot.db") as db:
+            async with aiosqlite.connect(DB_FILE) as db:
                 await db.execute("UPDATE users SET residence=? WHERE user_id=?", (message.text, user_id))
                 await db.commit()
             del user_steps[key]
             await message.answer(
-                "Реєстрація завершена!\n"
-                "Ви можете отримати доступ до опитувань та переглядати свій баланс.",
+                "Реєстрація завершена! Ви можете отримати доступ до опитувань та переглядати свій баланс.",
                 reply_markup=user_menu()
             )
             return
 
     # --- Меню для користувача ---
     if message.text == "Переглянути баланс":
-        async with aiosqlite.connect("socbot.db") as db:
+        async with aiosqlite.connect(DB_FILE) as db:
             async with db.execute("SELECT balance FROM users WHERE user_id=?", (user_id,)) as cursor:
                 row = await cursor.fetchone()
         bal = row[0] if row else 0
@@ -398,7 +423,7 @@ async def demodata(message: types.Message):
 
     # --- Доступні опитування ---
     if message.text == "Доступні опитування":
-        async with aiosqlite.connect("socbot.db") as db:
+        async with aiosqlite.connect(DB_FILE) as db:
             async with db.execute("SELECT survey_id, title FROM surveys ORDER BY survey_id DESC LIMIT 5") as cursor:
                 items = await cursor.fetchall()
         if not items:
@@ -414,7 +439,6 @@ async def demodata(message: types.Message):
         )
         return
 
-    # --- Почати опитування або з запрошення або з меню ---
     if message.text.startswith("Почати опитування"):
         try:
             poll_id = int(message.text.split("Почати опитування")[1].strip())
@@ -422,7 +446,7 @@ async def demodata(message: types.Message):
             await message.answer("Формат: Почати опитування <ID>")
             return
         key = user_id
-        async with aiosqlite.connect("socbot.db") as db:
+        async with aiosqlite.connect(DB_FILE) as db:
             async with db.execute("SELECT title, amount, questions FROM surveys WHERE survey_id=?", (poll_id,)) as cursor:
                 row = await cursor.fetchone()
             if not row:
@@ -440,7 +464,6 @@ async def demodata(message: types.Message):
         await ask_poll_question(message, user_steps[key]["poll"])
         return
 
-    # --- Відмовитися від опитування ---
     if message.text == "Відмовитися від опитування":
         await message.answer(
             "Ви відмовилися від участі у поточному опитуванні.",
@@ -453,14 +476,12 @@ async def demodata(message: types.Message):
     if key in user_steps and "poll" in user_steps[key]:
         ses = user_steps[key]["poll"]
         qobj = ses["questions"][ses["step"]]
-
-        # Якщо чекаємо текст для "Інше"
         if ses.get("input_other"):
             ses["answers"].append(message.text)
             ses["step"] += 1
             ses["input_other"] = False
             if ses["step"] >= len(ses["questions"]):
-                async with aiosqlite.connect("socbot.db") as db:
+                async with aiosqlite.connect(DB_FILE) as db:
                     await db.execute(
                         "INSERT INTO answers (user_id, survey_id, answer_data) VALUES (?, ?, ?)",
                         (user_id, ses["poll_id"], json.dumps(ses["answers"]))
@@ -483,26 +504,22 @@ async def demodata(message: types.Message):
             await ask_poll_question(message, ses)
             return
 
-        # Базова логіка
         ans = message.text
-        # "multi"
         if qobj.get("type") == "multi":
             selected = [x.strip() for x in ans.split(",") if x.strip() in qobj["options"]]
             if len(selected) == 0 or len(selected) > qobj.get("max", len(qobj["options"])):
                 await message.answer(f"Виберіть від 1 до {qobj.get('max', len(qobj['options']))} варіантів, через кому!")
                 return
             ses["answers"].append(selected)
-        # "radio" + "Інше"
         elif qobj.get("type") == "radio" and qobj.get("has_other") and ans == "Інше":
             ses["input_other"] = True
             await message.answer("Введіть ваш варіант відповіді:")
             return
         else:
             ses["answers"].append(ans)
-
         ses["step"] += 1
         if ses["step"] >= len(ses["questions"]):
-            async with aiosqlite.connect("socbot.db") as db:
+            async with aiosqlite.connect(DB_FILE) as db:
                 await db.execute(
                     "INSERT INTO answers (user_id, survey_id, answer_data) VALUES (?, ?, ?)",
                     (user_id, ses["poll_id"], json.dumps(ses["answers"]))
@@ -522,7 +539,6 @@ async def demodata(message: types.Message):
                 reply_markup=kb
             )
             return
-
         await ask_poll_question(message, ses)
         return
 
@@ -547,7 +563,7 @@ async def ask_poll_question(message: types.Message, ses):
 
 @dp.message(lambda msg: msg.text == "Переглянути опитування")
 async def view_surveys(message: types.Message):
-    async with aiosqlite.connect("socbot.db") as db:
+    async with aiosqlite.connect(DB_FILE) as db:
         async with db.execute("SELECT survey_id, title FROM surveys ORDER BY survey_id DESC LIMIT 10") as cursor:
             items = await cursor.fetchall()
     if not items:
@@ -561,7 +577,7 @@ async def export_answers(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         await message.answer("Доступно лише адміністратору.")
         return
-    async with aiosqlite.connect("socbot.db") as db:
+    async with aiosqlite.connect(DB_FILE) as db:
         q = "SELECT a.user_id, a.survey_id, a.answer_data, u.sex, u.birth_year, u.education, u.residence FROM answers a JOIN users u ON a.user_id=u.user_id"
         df = pd.read_sql_query(q, db)
     df.to_excel("export.xlsx", index=False)
