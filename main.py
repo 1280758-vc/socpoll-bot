@@ -9,11 +9,10 @@ from aiogram.filters import Command
 import gspread
 from google.oauth2.service_account import Credentials
 
-API_TOKEN = "ТВОЙ_ТЕЛЕГРАМ_ТОКЕН"
-ADMIN_IDS = [123456789]  # Вкажи свої айді адмінів
+API_TOKEN = "8330526731:AAHYuQliBPflpZbWRC5e4COdD2uHiQMtcdg"
+ADMIN_IDS = [383222956, 233536337]
 
 logging.basicConfig(level=logging.INFO)
-
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
@@ -28,8 +27,6 @@ ANSWERS_SHEET = "Answers_Survey_1"
 users_table = gs.open(USERS_SHEET).sheet1
 answers_table = gs.open(ANSWERS_SHEET).sheet1
 
-#--------------- DEMO UI -----------------------------
-
 def user_menu():
     kb = ReplyKeyboardMarkup(
         keyboard=[
@@ -39,8 +36,6 @@ def user_menu():
         resize_keyboard=True
     )
     return kb
-
-#---------- MAIN FUNCTIONALITY -----------------------
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
@@ -55,13 +50,11 @@ async def contact(message: types.Message):
     phone = message.contact.phone_number
     user_id = message.from_user.id
     kb = ReplyKeyboardMarkup([[KeyboardButton("Чоловік")], [KeyboardButton("Жінка")]], resize_keyboard=True)
-    # Перевір, чи є вже user_id в таблиці
     vals = users_table.col_values(1)
     if str(user_id) in vals:
         await message.answer("Ви вже зареєстровані!", reply_markup=user_menu())
         return
-    # Починай демо-реєстрацію
-    users_table.append_row([user_id, phone, "", "", "", ""])  # sex, birth_year, education, residence - пусто
+    users_table.append_row([user_id, phone, "", "", "", ""])
     await message.answer("Ваша стать?", reply_markup=kb)
 
 @dp.message(lambda msg: msg.text in ["Чоловік", "Жінка"])
@@ -113,9 +106,7 @@ async def poll_start(message: types.Message):
     user_id = message.from_user.id
     vals = users_table.col_values(1)
     idx = vals.index(str(user_id)) + 1
-    # Дістаємо демографію
     demo = users_table.row_values(idx)
-    # Запитуємо перше питання опитування
     await message.answer("Питання 1: Який ваш вік?")
     dp.data.setdefault(user_id, {"answers": [], "step": 1, "demo": demo})
 
@@ -130,13 +121,12 @@ async def poll_q2(message: types.Message):
     dp.data[message.from_user.id]["answers"].append(message.text)
     demo = dp.data[message.from_user.id]["demo"]
     answers = dp.data[message.from_user.id]["answers"]
-    # Записуємо в GoogleSheet (user_id, питання1, питання2, + демографія)
     answers_table.append_row([demo[0]] + answers + demo[1:])
     await message.answer("Дякуємо за участь!", reply_markup=user_menu())
     del dp.data[message.from_user.id]
 
 async def main():
-    dp.data = {}  # сюди будуть тимчасові сесії опитувань
+    dp.data = {}
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
