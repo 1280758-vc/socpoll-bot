@@ -128,6 +128,18 @@ async def admin_panel(message: types.Message):
         return
     await message.answer("Меню адміністратора:", reply_markup=admin_menu())
 
+ADMIN_CMDS = [
+    "Створити опитування",
+    "Оглянути/Редагувати анкету",
+    "Розіслати опитування",
+    "Експорт відповідей",
+    "Статистика"
+]
+
+@dp.message(lambda msg: msg.text in ADMIN_CMDS)
+async def admin_stub(message: types.Message):
+    await message.answer(f"Обрана функція “{message.text}”. Ця дія поки не реалізована. Якщо потрібна конкретна — напиши!")
+
 @dp.message(lambda msg: msg.text == "Почати опитування")
 async def poll_start(message: types.Message):
     files = [f['name'] for f in gs.list_spreadsheet_files() if f['name'].startswith("Answers_Survey_")]
@@ -157,6 +169,10 @@ async def balance(message: types.Message):
                     except:
                         pass
     await message.answer(f"Ваш баланс: {total} грн", reply_markup=user_menu())
+
+@dp.message(lambda msg: True)
+async def fallback(message: types.Message):
+    await message.answer("Бот працює. Це повідомлення не оброблено спеціальним хендлером.")
 
 async def main():
     dp.data = {}
