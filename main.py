@@ -12,8 +12,6 @@ from aiogram.filters import Command
 API_TOKEN = "8330526731:AAHYuQliBPflpZbWRC5e4COdD2uHiQMtcdg"
 ADMIN_IDS = [383222956, 233536337]
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher()
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -26,6 +24,9 @@ USERS_SHEET = "Users"
 users_table = gs.open(USERS_SHEET).sheet1
 
 REWARD_PER_SURVEY = 10
+
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher()
 
 def admin_menu():
     kb = ReplyKeyboardMarkup(
@@ -71,4 +72,95 @@ async def contact(message: types.Message):
         keyboard=[[KeyboardButton(text="Чоловік")], [KeyboardButton(text="Жінка")]],
         resize_keyboard=True
     )
-    await message
+    await message.answer("Ваша стать?", reply_markup=kb)
+
+@dp.message(lambda msg: msg.text in ["Чоловік", "Жінка"])
+async def input_sex(message: types.Message):
+    user_id = message.from_user.id
+    vals = users_table.col_values(1)
+    idx = vals.index(str(user_id)) + 1
+    users_table.update_cell(idx, 3, message.text)
+    await message.answer("Ваш рік народження?", reply_markup=ReplyKeyboardRemove())
+
+@dp.message(lambda msg: msg.text.isdigit() and 1920 < int(msg.text) < 2020)
+async def input_birth(message: types.Message):
+    user_id = message.from_user.id
+    vals = users_table.col_values(1)
+    idx = vals.index(str(user_id)) + 1
+    users_table.update_cell(idx, 4, message.text)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Середня")],
+            [KeyboardButton(text="Вища")],
+            [KeyboardButton(text="Учена ступінь")]
+        ],
+        resize_keyboard=True
+    )
+    await message.answer("Ваша освіта?", reply_markup=kb)
+
+@dp.message(lambda msg: msg.text in ["Середня", "Вища", "Учена ступінь"])
+async def input_education(message: types.Message):
+    user_id = message.from_user.id
+    vals = users_table.col_values(1)
+    idx = vals.index(str(user_id)) + 1
+    users_table.update_cell(idx, 5, message.text)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Місто")],
+            [KeyboardButton(text="Село")]
+        ],
+        resize_keyboard=True
+    )
+    await message.answer("Місце проживання?", reply_markup=kb)
+
+@dp.message(lambda msg: msg.text in ["Місто", "Село"])
+async def input_residence(message: types.Message):
+    user_id = message.from_user.id
+    vals = users_table.col_values(1)
+    idx = vals.index(str(user_id)) + 1
+    users_table.update_cell(idx, 6, message.text)
+    await message.answer("Реєстрація завершена!", reply_markup=user_menu())
+
+@dp.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Недостатньо прав.")
+        return
+    await message.answer("Меню адміністратора:", reply_markup=admin_menu())
+
+@dp.message(lambda msg: msg.text == "Почати опитування")
+async def poll_start(message: types.Message):
+    files = [f['name'] for f in gs.list_spreadsheet_files() if f['name'].startswith("Answers_Survey_")]
+    if not files:
+        await message.answer("Немає активних опитувань.")
+        return
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=f"{name.replace('Answers_Survey_', '')}")] for name in files],
+        resize_keyboard=True
+    )
+    await message.answer("Оберіть опитування:", reply_markup=kb)
+
+@dp.message(lambda msg: msg.text == "Переглянути баланс")
+async def balance(message: types.Message):
+    user_id = message.from_user.id
+    files = [f['name'] for f in gs.list_spreadsheet_files() if f['name'].startswith("Answers_Survey_")]
+    total = 0
+    for poll in files:
+        sheet = gs.open(poll).sheet1
+        data = sheet.get_all_values()
+        for row in data[2:]:
+            if len(row) >= 1 and str(row[0]) == str(user_id):
+                if len(row) > len(data[0]):
+                    v = row[-1]
+                    try:
+                        total += float(v)
+                    except:
+                        pass
+    await message.answer(f"Ваш баланс: {total} грн", reply_markup=user_menu())
+
+async def main():
+    dp.data = {}
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
