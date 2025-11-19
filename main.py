@@ -19,14 +19,13 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-CREDENTIALS_PATH = "/etc/secrets/credentials"  # Render Secrets
-
+CREDENTIALS_PATH = "/etc/secrets/credentials"
 creds = Credentials.from_service_account_file(CREDENTIALS_PATH, scopes=SCOPES)
 gs = gspread.authorize(creds)
 USERS_SHEET = "Users"
 users_table = gs.open(USERS_SHEET).sheet1
 
-REWARD_PER_SURVEY = 10  # Скільки 'грн' платить бот за одне опитування
+REWARD_PER_SURVEY = 10
 
 def admin_menu():
     kb = ReplyKeyboardMarkup(
@@ -67,4 +66,9 @@ async def contact(message: types.Message):
     if str(user_id) in vals:
         await message.answer("Ви вже зареєстровані!", reply_markup=user_menu())
         return
-    users
+    users_table.append_row([user_id, phone, "", "", "", ""])
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Чоловік")], [KeyboardButton(text="Жінка")]],
+        resize_keyboard=True
+    )
+    await message
