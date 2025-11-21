@@ -1,6 +1,5 @@
 import logging
 import asyncio
-import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from aiogram import Bot, Dispatcher, types
@@ -121,100 +120,4 @@ async def admin_panel(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         await message.answer("Недостатньо прав.")
         return
-    await message.answer("Меню адміністратора:", reply_markup=admin_menu())
-
-@dp.message(lambda msg: msg.text == "Створити опитування")
-async def poll_create_start(message: types.Message):
-    dp.data[message.from_user.id] = {"step": 0, "poll": {"questions": []}}
-    await message.answer("Введіть назву опитування:")
-
-@dp.message(lambda msg: msg.from_user.id in ADMIN_IDS and "step" in dp.data.get(msg.from_user.id, {}))
-async def poll_create_steps(message: types.Message):
-    state = dp.data[message.from_user.id]
-    poll = state["poll"]
-    if state["step"] == 0:
-        poll['title'] = message.text.strip()
-        state["step"] = 1
-        await message.answer("Скільки питань буде у опитуванні? (введіть число)")
-        return
-    if state["step"] == 1:
-        try:
-            poll['n'] = int(message.text)
-            poll['qidx'] = 1
-            state["step"] = 2
-            await message.answer(f"Введіть текст питання №1:")
-        except:
-            await message.answer("Введіть кількість питань (число)!")
-        return
-    if state["step"] == 2:
-        poll.setdefault("qbuf", {})
-        poll["qbuf"]["text"] = message.text.strip()
-        kb = ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="Один вибір")],
-            [KeyboardButton(text="Мультивибір")]
-        ], resize_keyboard=True)
-        state["step"] = 3
-        await message.answer("Тип питання:", reply_markup=kb)
-        return
-    if state["step"] == 3:
-        poll["qbuf"]["type"] = "multi" if "мульти" in message.text.lower() else "radio"
-        await message.answer(
-            "Введіть варіанти відповіді через кому (наприклад: Вар1, Вар2, Вар3, Жодного!).\nВиключаючу опцію позначте знаком '!'."
-        )
-        state["step"] = 4
-        return
-    if state["step"] == 4:
-        opts_raw = [o.strip() for o in message.text.split(",")]
-        opts, excl = [], None
-        for o in opts_raw:
-            if o.endswith("!"):
-                excl = o.rstrip("!").strip()
-                opts.append(excl)
-            else:
-                opts.append(o)
-        q = {
-            "text": poll['qbuf']['text'],
-            "type": poll['qbuf']['type'],
-            "options": opts
-        }
-        if excl and poll['qbuf']["type"] == "multi":
-            q["exclusive"] = excl
-        poll["questions"].append(q)
-        poll["qidx"] += 1
-        if poll["qidx"] <= poll['n']:
-            state["step"] = 2
-            await message.answer(f"Введіть текст питання №{poll['qidx']}:")
-            poll["qbuf"] = {}
-            return
-        # Створити Google Таблицю!
-        file_title = f"Answers_Survey_{poll['title']}"
-        sheet = gs.create(file_title)
-        sheet.share(creds.service_account_email, perm_type="user", role="writer")
-        ws = sheet.get_worksheet(0)
-        ws.append_row(
-            ["user_id"] + [q["text"] for q in poll["questions"]] +
-            ["phone", "sex", "birth_year", "education", "residence"]
-        )
-        ws.append_row(["meta"] + [str(q) for q in poll["questions"]])
-        await message.answer(f"Опитування створено!\nТаблиця: {file_title}", reply_markup=admin_menu())
-        del dp.data[message.from_user.id]
-
-@dp.message(lambda msg: msg.text == "Почати опитування")
-async def poll_start(message: types.Message):
-    files = [f['name'] for f in gs.list_spreadsheet_files() if f['name'].startswith("Answers_Survey_")]
-    if not files:
-        await message.answer("Немає активних опитувань.")
-        return
-    kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=f"{name.replace('Answers_Survey_', '')}")] for name in files],
-        resize_keyboard=True
-    )
-    await message.answer("Оберіть опитування:", reply_markup=kb)
-
-# додай далі свої/старі хендлери проходження питань, мультивиборів, експортів — до функціоналу нічого не пропало, просто в попередньому прикладі був спрощений шаблон!
-
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    await message.answer
