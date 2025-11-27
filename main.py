@@ -10,7 +10,7 @@ from aiogram.filters import Command
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-API_TOKEN = "8330526731:AAHDXrNmgrYJ3hHpNj1jIdGc7pYZzrHBGjk"
+API_TOKEN = "8330526731:AAHzpqLfO0JewWvH0msy1FF-Hk0IBYJDN8M"
 ADMIN_IDS = [383222956, 233536337]
 
 # ------------ GOOGLE SHEETS ------------
@@ -27,14 +27,14 @@ gs = gspread.authorize(creds)
 USERS_SHEET = "Users"
 users_table = gs.open(USERS_SHEET).sheet1
 
-# Очікується структура колонок:
+# Очікувана структура колонок:
 # 1: user_id
 # 2: phone
 # 3: sex
 # 4: birth_year
 # 5: education
 # 6: residence_type (Місто/Село)
-# 7: city_size (До 10 тис. / 10–50 тис. / ...)
+# 7: city_size
 
 # ------------ BOT ------------
 
