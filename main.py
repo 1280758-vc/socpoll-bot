@@ -1,28 +1,20 @@
 import logging
 import asyncio
-import gspread
-from google.oauth2.service_account import Credentials
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import Command
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 API_TOKEN = "8330526731:AAHDXrNmgrYJ3hHpNj1jIdGc7pYZzrHBGjk"
 ADMIN_IDS = [383222956, 233536337]
-logging.basicConfig(level=logging.INFO)
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
-CREDENTIALS_PATH = "/etc/secrets/credentials"
-creds = Credentials.from_service_account_file(CREDENTIALS_PATH, scopes=SCOPES)
-gs = gspread.authorize(creds)
-USERS_SHEET = "Users"
-users_table = gs.open(USERS_SHEET).sheet1
+# ---------- МІНІМАЛЬНИЙ БОТ БЕЗ GOOGLE SHEETS ДЛЯ ТЕСТУ ----------
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-dp.data = {}
 
 def admin_menu():
     return ReplyKeyboardMarkup(
@@ -47,77 +39,37 @@ def user_menu():
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
+    logger.info("Received /start from %s", message.from_user.id)
     kb = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="Поділитися номером", request_contact=True)]],
         resize_keyboard=True
     )
-    await message.answer("👋 Вітаю! Поділіться номером для реєстрації:", reply_markup=kb)
+    await message.answer("👋 Тестовий бот працює. Поділіться номером:", reply_markup=kb)
 
 @dp.message(lambda msg: msg.contact is not None)
 async def contact(message: types.Message):
-    phone = message.contact.phone_number
-    user_id = message.from_user.id
-    vals = users_table.col_values(1)
-    if str(user_id) in vals:
-        await message.answer("Ви вже зареєстровані!", reply_markup=user_menu())
-        return
-    users_table.append_row([user_id, phone, "", "", "", ""])
-    kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Чоловік")], [KeyboardButton(text="Жінка")]],
-        resize_keyboard=True
-    )
-    await message.answer("Ваша стать?", reply_markup=kb)
-
-@dp.message(lambda msg: msg.text in ["Чоловік", "Жінка"])
-async def input_sex(message: types.Message):
-    user_id = message.from_user.id
-    vals = users_table.col_values(1)
-    idx = vals.index(str(user_id)) + 1
-    users_table.update_cell(idx, 3, message.text)
-    await message.answer("Ваш рік народження?", reply_markup=ReplyKeyboardRemove())
-
-@dp.message(lambda msg: msg.text.isdigit() and 1920 < int(msg.text) < 2020)
-async def input_birth(message: types.Message):
-    user_id = message.from_user.id
-    vals = users_table.col_values(1)
-    idx = vals.index(str(user_id)) + 1
-    users_table.update_cell(idx, 4, message.text)
-    kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Середня")],
-            [KeyboardButton(text="Вища")],
-            [KeyboardButton(text="Учена ступінь")]
-        ],
-        resize_keyboard=True
-    )
-    await message.answer("Ваша освіта?", reply_markup=kb)
-
-@dp.message(lambda msg: msg.text in ["Середня", "Вища", "Учена ступінь"])
-async def input_education(message: types.Message):
-    user_id = message.from_user.id
-    vals = users_table.col_values(1)
-    idx = vals.index(str(user_id)) + 1
-    users_table.update_cell(idx, 5, message.text)
-    kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Місто")],
-            [KeyboardButton(text="Село")]
-        ],
-        resize_keyboard=True
-    )
-    await message.answer("Місце проживання?", reply_markup=kb)
-
-@dp.message(lambda msg: msg.text in ["Місто", "Село"])
-async def input_residence(message: types.Message):
-    user_id = message.from_user.id
-    vals = users_table.col_values(1)
-    idx = vals.index(str(user_id)) + 1
-    users_table.update_cell(idx, 6, message.text)
-    await message.answer("Реєстрація завершена!", reply_markup=user_menu())
+    logger.info("Got contact from %s: %s", message.from_user.id, message.contact.phone_number)
+    await message.answer("Контакт отримано, бот живий ✅", reply_markup=user_menu())
 
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         await message.answer("Недостатньо прав.")
         return
-    await message.answer
+    await message.answer("Адмін-меню (тест):", reply_markup=admin_menu())
+
+@dp.message()
+async def echo(message: types.Message):
+    logger.info("Echo message from %s: %s", message.from_user.id, message.text)
+    await message.answer("Тестовий echo: " + message.text)
+
+async def main():
+    logger.info("Bot starting...")
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.exception("Bot crashed with exception: %s", e)
+
+if __name__ == "__main__":
+    logger.info("main.py __name__ == '__main__', starting asyncio.run")
+    asyncio.run(main())
