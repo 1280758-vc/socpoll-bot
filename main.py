@@ -78,4 +78,123 @@ async def contact(message: types.Message):
 
     vals = users_table.col_values(1)
     if str(user_id) in vals:
-        await message.answer("Ви вже зареєстрован
+        await message.answer("Ви вже зареєстровані ✅", reply_markup=user_menu())
+        return
+
+    # user_id, phone, sex, birth_year, education, residence
+    users_table.append_row([user_id, phone, "", "", "", ""])
+    logger.info("User %s added to Users sheet", user_id)
+
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Чоловік")],
+            [KeyboardButton(text="Жінка")],
+        ],
+        resize_keyboard=True,
+    )
+    await message.answer("Ваша стать?", reply_markup=kb)
+
+
+@dp.message(lambda msg: msg.text in ["Чоловік", "Жінка"])
+async def input_sex(message: types.Message):
+    user_id = message.from_user.id
+    sex = message.text
+    vals = users_table.col_values(1)
+    if str(user_id) not in vals:
+        await message.answer("Спочатку натисніть /start і поділіться номером.")
+        return
+    row = vals.index(str(user_id)) + 1
+    users_table.update_cell(row, 3, sex)
+    logger.info("User %s sex saved: %s", user_id, sex)
+    await message.answer("Ваш рік народження?", reply_markup=ReplyKeyboardRemove())
+
+
+@dp.message(lambda msg: msg.text.isdigit() and 1920 < int(msg.text) < 2020)
+async def input_birth(message: types.Message):
+    user_id = message.from_user.id
+    birth_year = message.text
+    vals = users_table.col_values(1)
+    if str(user_id) not in vals:
+        await message.answer("Спочатку натисніть /start і поділіться номером.")
+        return
+    row = vals.index(str(user_id)) + 1
+    users_table.update_cell(row, 4, birth_year)
+    logger.info("User %s birth_year saved: %s", user_id, birth_year)
+
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Середня")],
+            [KeyboardButton(text="Вища")],
+            [KeyboardButton(text="Учена ступінь")],
+        ],
+        resize_keyboard=True,
+    )
+    await message.answer("Ваша освіта?", reply_markup=kb)
+
+
+@dp.message(lambda msg: msg.text in ["Середня", "Вища", "Учена ступінь"])
+async def input_education(message: types.Message):
+    user_id = message.from_user.id
+    edu = message.text
+    vals = users_table.col_values(1)
+    if str(user_id) not in vals:
+        await message.answer("Спочатку натисніть /start і поділіться номером.")
+        return
+    row = vals.index(str(user_id)) + 1
+    users_table.update_cell(row, 5, edu)
+    logger.info("User %s education saved: %s", user_id, edu)
+
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Місто")],
+            [KeyboardButton(text="Село")],
+        ],
+        resize_keyboard=True,
+    )
+    await message.answer("Місце проживання?", reply_markup=kb)
+
+
+@dp.message(lambda msg: msg.text in ["Місто", "Село"])
+async def input_residence(message: types.Message):
+    user_id = message.from_user.id
+    residence = message.text
+    vals = users_table.col_values(1)
+    if str(user_id) not in vals:
+        await message.answer("Спочатку натисніть /start і поділіться номером.")
+        return
+    row = vals.index(str(user_id)) + 1
+    users_table.update_cell(row, 6, residence)
+    logger.info("User %s residence saved: %s", user_id, residence)
+
+    await message.answer("Реєстрація завершена ✅", reply_markup=user_menu())
+
+
+# ------------ АДМІН / ECHO ------------
+
+@dp.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Недостатньо прав.")
+        return
+    await message.answer("Адмін-меню (поки що тест):", reply_markup=admin_menu())
+
+
+@dp.message()
+async def echo(message: types.Message):
+    logger.info("Echo message from %s: %s", message.from_user.id, message.text)
+    await message.answer("Тестовий echo: " + message.text)
+
+
+# ------------ ЗАПУСК ------------
+
+async def main():
+    logger.info("Bot starting with registration & Users...")
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.exception("Bot crashed with exception: %s", e)
+
+
+if __name__ == "__main__":
+    logger.info("main.py __name__ == '__main__', starting asyncio.run")
+    asyncio.run(main())
