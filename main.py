@@ -33,8 +33,8 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 
-def admin_menu():
-    return ReplyKeyboardMarkup(
+def admin_menu() -> ReplyKeyboardMarkup:
+    kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Створити опитування")],
             [KeyboardButton(text="Оглянути/Редагувати анкету")],
@@ -44,8 +44,38 @@ def admin_menu():
         ],
         resize_keyboard=True,
     )
+    return kb
 
 
-def user_menu():
-    return ReplyKeyboardMarkup(
-        keyboard
+def user_menu() -> ReplyKeyboardMarkup:
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Почати опитування")],
+            [KeyboardButton(text="Переглянути баланс")],
+        ],
+        resize_keyboard=True,
+    )
+    return kb
+
+
+# ------------ РЕЄСТРАЦІЯ В Users ------------
+
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    logger.info("Received /start from %s", message.from_user.id)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Поділитися номером", request_contact=True)]],
+        resize_keyboard=True,
+    )
+    await message.answer("👋 Вітаю! Поділіться номером для реєстрації:", reply_markup=kb)
+
+
+@dp.message(lambda msg: msg.contact is not None)
+async def contact(message: types.Message):
+    user_id = message.from_user.id
+    phone = message.contact.phone_number
+    logger.info("Got contact from %s: %s", user_id, phone)
+
+    vals = users_table.col_values(1)
+    if str(user_id) in vals:
+        await message.answer("Ви вже зареєстрован
