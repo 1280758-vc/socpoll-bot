@@ -27,6 +27,15 @@ gs = gspread.authorize(creds)
 USERS_SHEET = "Users"
 users_table = gs.open(USERS_SHEET).sheet1
 
+# Очікується структура колонок:
+# 1: user_id
+# 2: phone
+# 3: sex
+# 4: birth_year
+# 5: education
+# 6: residence_type (Місто/Село)
+# 7: city_size (До 10 тис. / 10–50 тис. / ...)
+
 # ------------ BOT ------------
 
 bot = Bot(token=API_TOKEN)
@@ -81,8 +90,8 @@ async def contact(message: types.Message):
         await message.answer("Ви вже зареєстровані ✅", reply_markup=user_menu())
         return
 
-    # user_id, phone, sex, birth_year, education, residence
-    users_table.append_row([user_id, phone, "", "", "", ""])
+    # user_id, phone, sex, birth_year, education, residence_type, city_size
+    users_table.append_row([user_id, phone, "", "", "", "", ""])
     logger.info("User %s added to Users sheet", user_id)
 
     kb = ReplyKeyboardMarkup(
@@ -155,16 +164,47 @@ async def input_education(message: types.Message):
 
 
 @dp.message(lambda msg: msg.text in ["Місто", "Село"])
-async def input_residence(message: types.Message):
+async def input_residence_type(message: types.Message):
     user_id = message.from_user.id
-    residence = message.text
+    residence_type = message.text
     vals = users_table.col_values(1)
     if str(user_id) not in vals:
         await message.answer("Спочатку натисніть /start і поділіться номером.")
         return
     row = vals.index(str(user_id)) + 1
-    users_table.update_cell(row, 6, residence)
-    logger.info("User %s residence saved: %s", user_id, residence)
+    users_table.update_cell(row, 6, residence_type)
+    logger.info("User %s residence type saved: %s", user_id, residence_type)
+
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="До 10 тис.")],
+            [KeyboardButton(text="10–50 тис.")],
+            [KeyboardButton(text="50–100 тис.")],
+            [KeyboardButton(text="100–500 тис.")],
+            [KeyboardButton(text="500 тис. і більше")],
+        ],
+        resize_keyboard=True,
+    )
+    await message.answer("Розмір населеного пункту?", reply_markup=kb)
+
+
+@dp.message(lambda msg: msg.text in [
+    "До 10 тис.",
+    "10–50 тис.",
+    "50–100 тис.",
+    "100–500 тис.",
+    "500 тис. і більше",
+])
+async def input_city_size(message: types.Message):
+    user_id = message.from_user.id
+    city_size = message.text
+    vals = users_table.col_values(1)
+    if str(user_id) not in vals:
+        await message.answer("Спочатку натисніть /start і поділіться номером.")
+        return
+    row = vals.index(str(user_id)) + 1
+    users_table.update_cell(row, 7, city_size)
+    logger.info("User %s city_size saved: %s", user_id, city_size)
 
     await message.answer("Реєстрація завершена ✅", reply_markup=user_menu())
 
@@ -188,7 +228,7 @@ async def echo(message: types.Message):
 # ------------ ЗАПУСК ------------
 
 async def main():
-    logger.info("Bot starting with registration & Users...")
+    logger.info("Bot starting with registration & Users (city size)...")
     try:
         await dp.start_polling(bot)
     except Exception as e:
