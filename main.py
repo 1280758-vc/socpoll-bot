@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import json
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -27,7 +28,7 @@ gs = gspread.authorize(creds)
 USERS_SHEET = "Users"
 users_table = gs.open(USERS_SHEET).sheet1
 
-POLLS_SHEET = "Polls"  # таблицю Polls ти створюєш вручну
+POLLS_SHEET = "Polls"  # таблиця Polls повинна існувати й мати колонки: poll_id | title | questions_json
 polls_table = gs.open(POLLS_SHEET).sheet1
 
 # ------------ BOT ------------
@@ -60,7 +61,7 @@ def user_menu() -> ReplyKeyboardMarkup:
     )
 
 
-# ------------ РЕЄСТРАЦІЯ В Users ------------
+# ------------ РЕЄСТРАЦІЯ В Users (як було) ------------
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
@@ -182,14 +183,17 @@ async def input_residence_type(message: types.Message):
     await message.answer("Розмір населеного пункту?", reply_markup=kb)
 
 
-@dp.message(lambda msg: msg.text in [
-    "До 10 тис.",
-    "10–50 тис.",
-    "50–100 тис.",
-    "100–500 тис.",
-    "500 тис.–1 000 000",
-    "Більше 1 000 000",
-])
+@dp.message(
+    lambda msg: msg.text
+    in [
+        "До 10 тис.",
+        "10–50 тис.",
+        "50–100 тис.",
+        "100–500 тис.",
+        "500 тис.–1 000 000",
+        "Більше 1 000 000",
+    ]
+)
 async def input_city_size(message: types.Message):
     user_id = message.from_user.id
     city_size = message.text
@@ -204,7 +208,7 @@ async def input_city_size(message: types.Message):
     await message.answer("Реєстрація завершена ✅", reply_markup=user_menu())
 
 
-# ------------ АДМІН: СТВОРЕННЯ ОПИТУВАННЯ ------------
+# ------------ АДМІН МЕНЮ ------------
 
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
@@ -214,13 +218,32 @@ async def admin_panel(message: types.Message):
     await message.answer("Адмін-меню:", reply_markup=admin_menu())
 
 
+# ------------ ЕТАП 1: СТВОРЕННЯ ОПИТУВАННЯ З РОЗШИРЕНОЮ СТРУКТУРОЮ ------------
+
+# Структура питання:
+# {
+#   "index": 1,
+#   "kind": "radio" | "multi" | "text" | "scale",
+#   "text": "...",
+#   "options": [...],              # для radio/multi
+#   "scale_min": 1, "scale_max": 5,# для scale
+#   "exclusive_option": "...",     # опція, яка виключає інші (для multi)
+#   "on_exclusive": "next" | "finish" | "goto:3"
+# }
+
 @dp.message(lambda msg: msg.from_user.id in ADMIN_IDS and msg.text == "Створити опитування")
 async def create_poll_start(message: types.Message):
-    dp.data[message.from_user.id] = {"step": "title", "poll": {"questions": []}}
+    dp.data[message.from_user.id] = {
+        "step": "title",
+        "poll": {"questions": []},
+    }
     await message.answer("Введіть назву опитування:", reply_markup=ReplyKeyboardRemove())
 
 
-@dp.message(lambda msg: msg.from_user.id in ADMIN_IDS and dp.data.get(msg.from_user.id, {}).get("step") == "title")
+@dp.message(
+    lambda msg: msg.from_user.id in ADMIN_IDS
+    and dp.data.get(msg.from_user.id, {}).get("step") == "title"
+)
 async def create_poll_set_title(message: types.Message):
     state = dp.data[message.from_user.id]
     state["poll"]["title"] = message.text.strip()
@@ -228,94 +251,312 @@ async def create_poll_set_title(message: types.Message):
     await message.answer("Скільки питань буде в опитуванні? Введіть число.")
 
 
-@dp.message(lambda msg: msg.from_user.id in ADMIN_IDS and dp.data.get(msg.from_user.id, {}).get("step") == "count")
+@dp.message(
+    lambda msg: msg.from_user.id in ADMIN_IDS
+    and dp.data.get(msg.from_user.id, {}).get("step") == "count"
+)
 async def create_poll_set_count(message: types.Message):
     state = dp.data[message.from_user.id]
     try:
         n = int(message.text)
+        if n <= 0:
+            raise ValueError
         state["poll"]["n"] = n
         state["poll"]["qidx"] = 1
         state["step"] = "q_text"
         await message.answer("Введіть текст питання №1:")
     except ValueError:
-        await message.answer("Введіть, будь ласка, число.")
+        await message.answer("Введіть, будь ласка, додатне число.")
 
 
-@dp.message(lambda msg: msg.from_user.id in ADMIN_IDS and dp.data.get(msg.from_user.id, {}).get("step") == "q_text")
+@dp.message(
+    lambda msg: msg.from_user.id in ADMIN_IDS
+    and dp.data.get(msg.from_user.id, {}).get("step") == "q_text"
+)
 async def create_poll_q_text(message: types.Message):
     state = dp.data[message.from_user.id]
     poll = state["poll"]
-    poll.setdefault("qbuf", {})
-    poll["qbuf"]["text"] = message.text.strip()
+    poll["qbuf"] = {
+        "index": poll["qidx"],
+        "text": message.text.strip(),
+    }
     kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Один вибір")],
             [KeyboardButton(text="Мультивибір")],
+            [KeyboardButton(text="Текст")],
+            [KeyboardButton(text="Шкала")],
         ],
         resize_keyboard=True,
     )
-    state["step"] = "q_type"
-    await message.answer("Тип питання:", reply_markup=kb)
+    state["step"] = "q_kind"
+    await message.answer("Оберіть тип питання:", reply_markup=kb)
 
 
-@dp.message(lambda msg: msg.from_user.id in ADMIN_IDS and dp.data.get(msg.from_user.id, {}).get("step") == "q_type")
-async def create_poll_q_type(message: types.Message):
+@dp.message(
+    lambda msg: msg.from_user.id in ADMIN_IDS
+    and dp.data.get(msg.from_user.id, {}).get("step") == "q_kind"
+)
+async def create_poll_q_kind(message: types.Message):
     state = dp.data[message.from_user.id]
     poll = state["poll"]
-    text = message.text.lower()
-    poll["qbuf"]["type"] = "multi" if "мульти" in text else "radio"
-    await message.answer("Введіть варіанти відповіді через кому. Виключаючу опцію позначте знаком '!' в кінці.")
-    state["step"] = "q_options"
+    kind_text = message.text.lower()
+
+    if "один" in kind_text:
+        poll["qbuf"]["kind"] = "radio"
+    elif "мульти" in kind_text:
+        poll["qbuf"]["kind"] = "multi"
+    elif "текст" in kind_text:
+        poll["qbuf"]["kind"] = "text"
+    elif "шкала" in kind_text:
+        poll["qbuf"]["kind"] = "scale"
+    else:
+        await message.answer("Будь ласка, оберіть один із варіантів типу.")
+        return
+
+    kind = poll["qbuf"]["kind"]
+
+    if kind in ["radio", "multi"]:
+        await message.answer(
+            "Введіть варіанти відповіді через кому.\n"
+            "Наприклад: Варіант 1, Варіант 2, Варіант 3"
+        )
+        state["step"] = "q_options"
+    elif kind == "text":
+        # для текстового питання більше нічого питати не треба
+        poll["qbuf"]["options"] = []
+        poll["qbuf"]["scale_min"] = None
+        poll["qbuf"]["scale_max"] = None
+        poll["qbuf"]["exclusive_option"] = None
+        poll["qbuf"]["on_exclusive"] = None
+        await finalize_question_and_maybe_next(message)
+    elif kind == "scale":
+        await message.answer(
+            "Введіть мінімальне та максимальне значення шкали через дефіс.\n"
+            "Наприклад: 1-5 або 0-10"
+        )
+        state["step"] = "q_scale_range"
 
 
-@dp.message(lambda msg: msg.from_user.id in ADMIN_IDS and dp.data.get(msg.from_user.id, {}).get("step") == "q_options")
+@dp.message(
+    lambda msg: msg.from_user.id in ADMIN_IDS
+    and dp.data.get(msg.from_user.id, {}).get("step") == "q_options"
+)
 async def create_poll_q_options(message: types.Message):
     state = dp.data[message.from_user.id]
     poll = state["poll"]
-    opts_raw = [o.strip() for o in message.text.split(",")]
-    opts, excl = [], None
-    for o in opts_raw:
-        if o.endswith("!"):
-            excl = o.rstrip("!").strip()
-            opts.append(excl)
-        else:
-            opts.append(o)
+    opts_raw = [o.strip() for o in message.text.split(",") if o.strip()]
+    if not opts_raw:
+        await message.answer("Введіть хоча б один варіант.")
+        return
+    poll["qbuf"]["options"] = opts_raw
 
+    if poll["qbuf"]["kind"] == "multi":
+        kb = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="Так, є виключна опція")],
+                [KeyboardButton(text="Ні, немає виключної опції")],
+            ],
+            resize_keyboard=True,
+        )
+        state["step"] = "q_multi_exclusive_yesno"
+        await message.answer("Чи є серед варіантів виключна опція (типу 'Жоден з наведених')?", reply_markup=kb)
+    else:
+        # radio – без виключної логіки
+        poll["qbuf"]["scale_min"] = None
+        poll["qbuf"]["scale_max"] = None
+        poll["qbuf"]["exclusive_option"] = None
+        poll["qbuf"]["on_exclusive"] = None
+        await finalize_question_and_maybe_next(message)
+
+
+@dp.message(
+    lambda msg: msg.from_user.id in ADMIN_IDS
+    and dp.data.get(msg.from_user.id, {}).get("step") == "q_multi_exclusive_yesno"
+)
+async def create_poll_q_multi_exclusive_yesno(message: types.Message):
+    state = dp.data[message.from_user.id]
+    poll = state["poll"]
+    text = message.text.lower()
+
+    if "так" in text:
+        # попросимо вказати точний текст виключної опції
+        state["step"] = "q_multi_exclusive_text"
+        await message.answer(
+            "Введіть точно той текст варіанту, який є виключним (наприклад: Жоден з наведених).",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+    else:
+        # без виключної опції
+        poll["qbuf"]["exclusive_option"] = None
+        poll["qbuf"]["on_exclusive"] = None
+        poll["qbuf"]["scale_min"] = None
+        poll["qbuf"]["scale_max"] = None
+        await finalize_question_and_maybe_next(message)
+
+
+@dp.message(
+    lambda msg: msg.from_user.id in ADMIN_IDS
+    and dp.data.get(msg.from_user.id, {}).get("step") == "q_multi_exclusive_text"
+)
+async def create_poll_q_multi_exclusive_text(message: types.Message):
+    state = dp.data[message.from_user.id]
+    poll = state["poll"]
+    excl_text = message.text.strip()
+
+    if excl_text not in poll["qbuf"]["options"]:
+        await message.answer("Цієї опції немає в списку варіантів. Введіть текст ще раз точно так, як у варіантах.")
+        return
+
+    poll["qbuf"]["exclusive_option"] = excl_text
+
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Далі (наступне питання)")],
+            [KeyboardButton(text="Завершити опитування")],
+        ],
+        resize_keyboard=True,
+    )
+    kb.keyboard.append([KeyboardButton(text="Перейти до питання №...")])
+    state["step"] = "q_multi_on_exclusive"
+    await message.answer(
+        "Що робити, якщо користувач обирає цю виключну опцію?\n"
+        "Оберіть: 'Далі (наступне питання)', 'Завершити опитування' або 'Перейти до питання №...'",
+        reply_markup=kb,
+    )
+
+
+@dp.message(
+    lambda msg: msg.from_user.id in ADMIN_IDS
+    and dp.data.get(msg.from_user.id, {}).get("step") == "q_multi_on_exclusive"
+)
+async def create_poll_q_multi_on_exclusive(message: types.Message):
+    state = dp.data[message.from_user.id]
+    poll = state["poll"]
+    text = message.text.lower()
+
+    if "завершити" in text:
+        poll["qbuf"]["on_exclusive"] = "finish"
+        poll["qbuf"]["scale_min"] = None
+        poll["qbuf"]["scale_max"] = None
+        await finalize_question_and_maybe_next(message)
+    elif "наступ" in text:
+        poll["qbuf"]["on_exclusive"] = "next"
+        poll["qbuf"]["scale_min"] = None
+        poll["qbuf"]["scale_max"] = None
+        await finalize_question_and_maybe_next(message)
+    elif "перейти" in text:
+        state["step"] = "q_multi_on_exclusive_goto"
+        await message.answer(
+            "Введіть номер питання (1..N), до якого треба перейти при виборі виключної опції.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+    else:
+        await message.answer("Будь ласка, оберіть один із варіантів: наступне, завершити, перейти до питання №...")
+
+
+@dp.message(
+    lambda msg: msg.from_user.id in ADMIN_IDS
+    and dp.data.get(msg.from_user.id, {}).get("step") == "q_multi_on_exclusive_goto"
+)
+async def create_poll_q_multi_on_exclusive_goto(message: types.Message):
+    state = dp.data[message.from_user.id]
+    poll = state["poll"]
+    try:
+        goto_idx = int(message.text)
+        if goto_idx <= 0:
+            raise ValueError
+        poll["qbuf"]["on_exclusive"] = f"goto:{goto_idx}"
+        poll["qbuf"]["scale_min"] = None
+        poll["qbuf"]["scale_max"] = None
+        await finalize_question_and_maybe_next(message)
+    except ValueError:
+        await message.answer("Введіть коректний номер питання (додатне число).")
+
+
+@dp.message(
+    lambda msg: msg.from_user.id in ADMIN_IDS
+    and dp.data.get(msg.from_user.id, {}).get("step") == "q_scale_range"
+)
+async def create_poll_q_scale_range(message: types.Message):
+    state = dp.data[message.from_user.id]
+    poll = state["poll"]
+    text = message.text.replace(" ", "")
+    if "-" not in text:
+        await message.answer("Введіть діапазон у форматі мін-макс, наприклад: 1-5")
+        return
+    left, right = text.split("-", 1)
+    try:
+        s_min = int(left)
+        s_max = int(right)
+        if s_min >= s_max:
+            raise ValueError
+    except ValueError:
+        await message.answer("Діапазон некоректний. Приклад: 1-5 або 0-10.")
+        return
+
+    poll["qbuf"]["scale_min"] = s_min
+    poll["qbuf"]["scale_max"] = s_max
+    poll["qbuf"]["options"] = []
+    poll["qbuf"]["exclusive_option"] = None
+    poll["qbuf"]["on_exclusive"] = None
+    await finalize_question_and_maybe_next(message)
+
+
+async def finalize_question_and_maybe_next(message: types.Message):
+    """Допоміжна функція: додає питання в poll['questions'] і переходить далі або завершує опитування."""
+    state = dp.data[message.from_user.id]
+    poll = state["poll"]
     q = {
+        "index": poll["qbuf"]["index"],
+        "kind": poll["qbuf"]["kind"],
         "text": poll["qbuf"]["text"],
-        "type": poll["qbuf"]["type"],
-        "options": opts,
+        "options": poll["qbuf"].get("options", []),
+        "scale_min": poll["qbuf"].get("scale_min"),
+        "scale_max": poll["qbuf"].get("scale_max"),
+        "exclusive_option": poll["qbuf"].get("exclusive_option"),
+        "on_exclusive": poll["qbuf"].get("on_exclusive"),
     }
-    if excl and poll["qbuf"]["type"] == "multi":
-        q["exclusive"] = excl
-
     poll["questions"].append(q)
     poll["qidx"] += 1
 
     if poll["qidx"] <= poll["n"]:
-        poll["qbuf"] = {}
+        # наступне питання
         state["step"] = "q_text"
         await message.answer(f"Введіть текст питання №{poll['qidx']}:")
-        return
+    else:
+        # всі питання введені – зберігаємо в Polls
+        questions_json = json.dumps(poll["questions"], ensure_ascii=False)
+        existing_ids = polls_table.col_values(1)
+        try:
+            next_id = max(int(x) for x in existing_ids[1:] if x.isdigit()) + 1
+        except ValueError:
+            next_id = 1
+        polls_table.append_row([next_id, poll["title"], questions_json])
+        await message.answer(
+            f"Опитування '{poll['title']}' створено.\n"
+            f"Питань: {len(poll['questions'])}. Структура збережена в Polls.",
+            reply_markup=admin_menu(),
+        )
+        del dp.data[message.from_user.id]
 
-    import json
-    # припустимо, poll_id = кількість рядків + 1
-    poll_id = len(polls_table.col_values(1))  # простий варіант
-    polls_table.append_row([poll_id, poll["title"], json.dumps(poll["questions"], ensure_ascii=False)])
-    await message.answer(f"Опитування '{poll['title']}' створено і збережено в Polls.", reply_markup=admin_menu())
-    del dp.data[message.from_user.id]
 
-
-# ------------ КНОПКИ КОРИСТУВАЧА (заглушки) ------------
+# ------------ КНОПКИ КОРИСТУВАЧА (заглушки, поки немає Етапу 2) ------------
 
 @dp.message(lambda msg: msg.text == "Почати опитування")
 async def user_start_poll(message: types.Message):
-    await message.answer("Функція проходження опитувань буде додана пізніше.", reply_markup=user_menu())
+    await message.answer(
+        "Проходження опитувань ще в розробці. Структура опитувань уже зберігається в Polls.",
+        reply_markup=user_menu(),
+    )
 
 
 @dp.message(lambda msg: msg.text == "Переглянути баланс")
 async def user_balance(message: types.Message):
-    await message.answer("Баланс буде рахуватися після додавання відповідей по опитуваннях.", reply_markup=user_menu())
+    await message.answer(
+        "Баланс буде рахуватися після додавання запису відповідей. Зараз реалізуємо логіку опитувань.",
+        reply_markup=user_menu(),
+    )
 
 
 # ------------ FALLBACK ------------
@@ -329,7 +570,7 @@ async def fallback(message: types.Message):
 # ------------ ЗАПУСК ------------
 
 async def main():
-    logger.info("Bot starting with registration, city size & admin poll creation...")
+    logger.info("Bot starting (registration + poll creation stage 1)...")
     try:
         await dp.start_polling(bot)
     except Exception as e:
