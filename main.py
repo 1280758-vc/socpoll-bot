@@ -54,6 +54,8 @@ def user_menu() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
     )
 
+# ---------- РЕЄСТРАЦІЯ ----------
+
 @dp.message(Command("start"))
 async def start(message: types.Message):
     logger.info("Received /start from %s", message.from_user.id)
@@ -184,14 +186,14 @@ async def input_city_size(message: types.Message):
 
     await message.answer("Реєстрація завершена ✅", reply_markup=user_menu())
 
+# ---------- АДМІН: МЕНЮ + СТВОРЕННЯ ОПИТУВАННЯ (як на етапі 1) ----------
+
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         await message.answer("Недостатньо прав.")
         return
     await message.answer("Адмін-меню:", reply_markup=admin_menu())
-
-# ----- ЕТАП 1: створення опитування, структура в Polls -----
 
 @dp.message(lambda m: m.from_user.id in ADMIN_IDS and m.text == "Створити опитування")
 async def create_poll_start(message: types.Message):
@@ -431,13 +433,182 @@ async def finalize_question_and_maybe_next(message: types.Message):
         )
         del dp.data[message.from_user.id]
 
+# ---------- ЕТАП 2: ПРОХОДЖЕННЯ ОПИТУВАННЯ ----------
+
 @dp.message(lambda m: m.text == "Почати опитування")
 async def user_start_poll(message: types.Message):
-    await message.answer("Проходження опитувань ще в розробці. Структура опитувань уже зберігається в Polls.", reply_markup=user_menu())
+    # беремо список опитувань із Polls
+    all_rows = polls_table.get_all_values()
+    titles = [row[1] for row in all_rows[1:] if len(row) >= 2]
+    if not titles:
+        await message.answer("Немає доступних опитувань.", reply_markup=user_menu())
+        return
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=t)] for t in titles],
+        resize_keyboard=True,
+    )
+    dp.data[message.from_user.id] = {"stage": "choose_poll"}
+    await message.answer("Оберіть опитування:", reply_markup=kb)
+
+@dp.message(lambda m: dp.data.get(m.from_user.id, {}).get("stage") == "choose_poll")
+async def user_choose_poll(message: types.Message):
+    title = message.text
+    all_rows = polls_table.get_all_values()
+    poll_row = None
+    for row in all_rows[1:]:
+        if len(row) >= 2 and row[1] == title:
+            poll_row = row
+            break
+    if not poll_row:
+        await message.answer("Таке опитування не знайдено. Спробуйте ще раз.", reply_markup=user_menu())
+        dp.data.pop(message.from_user.id, None)
+        return
+
+    questions = json.loads(poll_row[2])
+    dp.data[message.from_user.id] = {
+        "stage": "in_poll",
+        "poll_title": title,
+        "questions": questions,
+        "current_index": 1,
+        "answers": {},
+    }
+    await ask_next_question(message)
+
+async def ask_next_question(message: types.Message):
+    state = dp.data.get(message.from_user.id)
+    if not state:
+        await message.answer("Сесія опитування втрачена. Почніть заново.", reply_markup=user_menu())
+        return
+
+    questions = state["questions"]
+    idx = state["current_index"]
+
+    q = next((q for q in questions if q["index"] == idx), None)
+    if not q:
+        # немає питання з таким індексом — завершуємо
+        await finish_poll(message)
+        return
+
+    kind = q["kind"]
+    text = q["text"]
+    options = q.get("options") or []
+    kb = None
+
+    if kind in ["radio", "multi"]:
+        kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=o)] for o in options],
+            resize_keyboard=True,
+        )
+        await message.answer(text, reply_markup=kb)
+    elif kind == "text":
+        await message.answer(text, reply_markup=ReplyKeyboardRemove())
+    elif kind == "scale":
+        s_min = q.get("scale_min", 1)
+        s_max = q.get("scale_max", 5)
+        row = [KeyboardButton(text=str(i)) for i in range(s_min, s_max + 1)]
+        kb = ReplyKeyboardMarkup(keyboard=[row], resize_keyboard=True)
+        await message.answer(text, reply_markup=kb)
+    else:
+        await message.answer(text, reply_markup=ReplyKeyboardRemove())
+
+@dp.message(lambda m: dp.data.get(m.from_user.id, {}).get("stage") == "in_poll")
+async def user_poll_answer(message: types.Message):
+    state = dp.data.get(message.from_user.id)
+    if not state:
+        await message.answer("Сесія опитування втрачена. Почніть заново.", reply_markup=user_menu())
+        return
+
+    user_id = message.from_user.id
+    idx = state["current_index"]
+    questions = state["questions"]
+    q = next((q for q in questions if q["index"] == idx), None)
+    if not q:
+        await finish_poll(message)
+        return
+
+    kind = q["kind"]
+    text = message.text
+
+    # валідація для scale
+    if kind == "scale":
+        try:
+            val = int(text)
+            s_min = q.get("scale_min", 1)
+            s_max = q.get("scale_max", 5)
+            if not (s_min <= val <= s_max):
+                raise ValueError
+        except ValueError:
+            await message.answer("Введіть число в межах шкали.")
+            return
+
+    # валідація для radio/multi
+    if kind in ["radio", "multi"]:
+        options = q.get("options") or []
+        if text not in options:
+            await message.answer("Оберіть одну з кнопок.")
+            return
+
+    # зберігаємо відповідь (для multi поки один вибір з клавіатури)
+    state["answers"][idx] = text
+
+    # логіка виключної опції для multi
+    if kind == "multi" and q.get("exclusive_option") and text == q["exclusive_option"]:
+        action = q.get("on_exclusive") or "next"
+        if action == "finish":
+            await finish_poll(message)
+            return
+        if action.startswith("goto:"):
+            try:
+                goto_idx = int(action.split(":", 1)[1])
+                state["current_index"] = goto_idx
+                await ask_next_question(message)
+                return
+            except ValueError:
+                pass  # якщо щось не так — просто далі
+
+    # звичайний перехід до наступного питання
+    state["current_index"] += 1
+    await ask_next_question(message)
+
+async def finish_poll(message: types.Message):
+    state = dp.data.get(message.from_user.id)
+    if not state:
+        await message.answer("Опитування завершено.", reply_markup=user_menu())
+        return
+
+    user_id = message.from_user.id
+    title = state["poll_title"]
+    answers = state["answers"]
+    questions = state["questions"]
+
+    # шукаємо/створюємо таблицю Answers_survey_<title> (ти можеш створити її вручну)
+    file_name = f"Answers_survey_{title}"
+    try:
+        ans_sheet = gs.open(file_name).sheet1
+    except gspread.SpreadsheetNotFound:
+        sh = gs.create(file_name)
+        sh.share(creds.service_account_email, perm_type="user", role="writer")
+        ans_sheet = sh.sheet1
+        header = ["user_id"] + [q["text"] for q in questions]
+        ans_sheet.append_row(header)
+
+    # збираємо рядок відповіді в порядку індексів питань
+    row = [user_id]
+    for q in questions:
+        val = answers.get(q["index"], "")
+        row.append(val)
+    ans_sheet.append_row(row)
+
+    await message.answer("Дякуємо! Ваші відповіді збережені.", reply_markup=user_menu())
+    dp.data.pop(message.from_user.id, None)
+
+# ---------- Баланс (заглушка) ----------
 
 @dp.message(lambda m: m.text == "Переглянути баланс")
 async def user_balance(message: types.Message):
-    await message.answer("Баланс буде рахуватися після додавання запису відповідей.", reply_markup=user_menu())
+    await message.answer("Баланс буде рахуватися після налаштування винагороди за опитування.", reply_markup=user_menu())
+
+# ---------- Fallback ----------
 
 @dp.message()
 async def fallback(message: types.Message):
@@ -445,7 +616,7 @@ async def fallback(message: types.Message):
     await message.answer("Команда не розпізнана. Використовуйте меню або /start.")
 
 async def main():
-    logger.info("Bot starting (registration + poll creation stage 1)...")
+    logger.info("Bot starting (registration + poll creation + poll passing)...")
     try:
         await dp.start_polling(bot)
     except Exception as e:
