@@ -11,7 +11,7 @@ from aiogram.filters import Command
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-API_TOKEN = "8330526731:AAHzpqLfO0JewWvH0msy1FF-Hk0IBYJDN8M"
+API_TOKEN = "8330526731:AAF6gnM2wovo2U_x7HVKd9YGn7hrxOajEsY"
 ADMIN_IDS = [383222956, 233536337]
 
 # ------------ GOOGLE SHEETS ------------
@@ -61,7 +61,7 @@ def user_menu() -> ReplyKeyboardMarkup:
     )
 
 
-# ------------ РЕЄСТРАЦІЯ В Users (як було) ------------
+# ------------ РЕЄСТРАЦІЯ В Users ------------
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
@@ -84,7 +84,6 @@ async def contact(message: types.Message):
         await message.answer("Ви вже зареєстровані ✅", reply_markup=user_menu())
         return
 
-    # user_id, phone, sex, birth_year, education, residence_type, city_size
     users_table.append_row([user_id, phone, "", "", "", "", ""])
     logger.info("User %s added to Users sheet", user_id)
 
@@ -218,18 +217,7 @@ async def admin_panel(message: types.Message):
     await message.answer("Адмін-меню:", reply_markup=admin_menu())
 
 
-# ------------ ЕТАП 1: СТВОРЕННЯ ОПИТУВАННЯ З РОЗШИРЕНОЮ СТРУКТУРОЮ ------------
-
-# Структура питання:
-# {
-#   "index": 1,
-#   "kind": "radio" | "multi" | "text" | "scale",
-#   "text": "...",
-#   "options": [...],              # для radio/multi
-#   "scale_min": 1, "scale_max": 5,# для scale
-#   "exclusive_option": "...",     # опція, яка виключає інші (для multi)
-#   "on_exclusive": "next" | "finish" | "goto:3"
-# }
+# ------------ ЕТАП 1: СТВОРЕННЯ ОПИТУВАННЯ (структура в Polls) ------------
 
 @dp.message(lambda msg: msg.from_user.id in ADMIN_IDS and msg.text == "Створити опитування")
 async def create_poll_start(message: types.Message):
@@ -294,289 +282,3 @@ async def create_poll_q_text(message: types.Message):
 
 
 @dp.message(
-    lambda msg: msg.from_user.id in ADMIN_IDS
-    and dp.data.get(msg.from_user.id, {}).get("step") == "q_kind"
-)
-async def create_poll_q_kind(message: types.Message):
-    state = dp.data[message.from_user.id]
-    poll = state["poll"]
-    kind_text = message.text.lower()
-
-    if "один" in kind_text:
-        poll["qbuf"]["kind"] = "radio"
-    elif "мульти" in kind_text:
-        poll["qbuf"]["kind"] = "multi"
-    elif "текст" in kind_text:
-        poll["qbuf"]["kind"] = "text"
-    elif "шкала" in kind_text:
-        poll["qbuf"]["kind"] = "scale"
-    else:
-        await message.answer("Будь ласка, оберіть один із варіантів типу.")
-        return
-
-    kind = poll["qbuf"]["kind"]
-
-    if kind in ["radio", "multi"]:
-        await message.answer(
-            "Введіть варіанти відповіді через кому.\n"
-            "Наприклад: Варіант 1, Варіант 2, Варіант 3"
-        )
-        state["step"] = "q_options"
-    elif kind == "text":
-        # для текстового питання більше нічого питати не треба
-        poll["qbuf"]["options"] = []
-        poll["qbuf"]["scale_min"] = None
-        poll["qbuf"]["scale_max"] = None
-        poll["qbuf"]["exclusive_option"] = None
-        poll["qbuf"]["on_exclusive"] = None
-        await finalize_question_and_maybe_next(message)
-    elif kind == "scale":
-        await message.answer(
-            "Введіть мінімальне та максимальне значення шкали через дефіс.\n"
-            "Наприклад: 1-5 або 0-10"
-        )
-        state["step"] = "q_scale_range"
-
-
-@dp.message(
-    lambda msg: msg.from_user.id in ADMIN_IDS
-    and dp.data.get(msg.from_user.id, {}).get("step") == "q_options"
-)
-async def create_poll_q_options(message: types.Message):
-    state = dp.data[message.from_user.id]
-    poll = state["poll"]
-    opts_raw = [o.strip() for o in message.text.split(",") if o.strip()]
-    if not opts_raw:
-        await message.answer("Введіть хоча б один варіант.")
-        return
-    poll["qbuf"]["options"] = opts_raw
-
-    if poll["qbuf"]["kind"] == "multi":
-        kb = ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="Так, є виключна опція")],
-                [KeyboardButton(text="Ні, немає виключної опції")],
-            ],
-            resize_keyboard=True,
-        )
-        state["step"] = "q_multi_exclusive_yesno"
-        await message.answer("Чи є серед варіантів виключна опція (типу 'Жоден з наведених')?", reply_markup=kb)
-    else:
-        # radio – без виключної логіки
-        poll["qbuf"]["scale_min"] = None
-        poll["qbuf"]["scale_max"] = None
-        poll["qbuf"]["exclusive_option"] = None
-        poll["qbuf"]["on_exclusive"] = None
-        await finalize_question_and_maybe_next(message)
-
-
-@dp.message(
-    lambda msg: msg.from_user.id in ADMIN_IDS
-    and dp.data.get(msg.from_user.id, {}).get("step") == "q_multi_exclusive_yesno"
-)
-async def create_poll_q_multi_exclusive_yesno(message: types.Message):
-    state = dp.data[message.from_user.id]
-    poll = state["poll"]
-    text = message.text.lower()
-
-    if "так" in text:
-        # попросимо вказати точний текст виключної опції
-        state["step"] = "q_multi_exclusive_text"
-        await message.answer(
-            "Введіть точно той текст варіанту, який є виключним (наприклад: Жоден з наведених).",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-    else:
-        # без виключної опції
-        poll["qbuf"]["exclusive_option"] = None
-        poll["qbuf"]["on_exclusive"] = None
-        poll["qbuf"]["scale_min"] = None
-        poll["qbuf"]["scale_max"] = None
-        await finalize_question_and_maybe_next(message)
-
-
-@dp.message(
-    lambda msg: msg.from_user.id in ADMIN_IDS
-    and dp.data.get(msg.from_user.id, {}).get("step") == "q_multi_exclusive_text"
-)
-async def create_poll_q_multi_exclusive_text(message: types.Message):
-    state = dp.data[message.from_user.id]
-    poll = state["poll"]
-    excl_text = message.text.strip()
-
-    if excl_text not in poll["qbuf"]["options"]:
-        await message.answer("Цієї опції немає в списку варіантів. Введіть текст ще раз точно так, як у варіантах.")
-        return
-
-    poll["qbuf"]["exclusive_option"] = excl_text
-
-    kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Далі (наступне питання)")],
-            [KeyboardButton(text="Завершити опитування")],
-        ],
-        resize_keyboard=True,
-    )
-    kb.keyboard.append([KeyboardButton(text="Перейти до питання №...")])
-    state["step"] = "q_multi_on_exclusive"
-    await message.answer(
-        "Що робити, якщо користувач обирає цю виключну опцію?\n"
-        "Оберіть: 'Далі (наступне питання)', 'Завершити опитування' або 'Перейти до питання №...'",
-        reply_markup=kb,
-    )
-
-
-@dp.message(
-    lambda msg: msg.from_user.id in ADMIN_IDS
-    and dp.data.get(msg.from_user.id, {}).get("step") == "q_multi_on_exclusive"
-)
-async def create_poll_q_multi_on_exclusive(message: types.Message):
-    state = dp.data[message.from_user.id]
-    poll = state["poll"]
-    text = message.text.lower()
-
-    if "завершити" in text:
-        poll["qbuf"]["on_exclusive"] = "finish"
-        poll["qbuf"]["scale_min"] = None
-        poll["qbuf"]["scale_max"] = None
-        await finalize_question_and_maybe_next(message)
-    elif "наступ" in text:
-        poll["qbuf"]["on_exclusive"] = "next"
-        poll["qbuf"]["scale_min"] = None
-        poll["qbuf"]["scale_max"] = None
-        await finalize_question_and_maybe_next(message)
-    elif "перейти" in text:
-        state["step"] = "q_multi_on_exclusive_goto"
-        await message.answer(
-            "Введіть номер питання (1..N), до якого треба перейти при виборі виключної опції.",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-    else:
-        await message.answer("Будь ласка, оберіть один із варіантів: наступне, завершити, перейти до питання №...")
-
-
-@dp.message(
-    lambda msg: msg.from_user.id in ADMIN_IDS
-    and dp.data.get(msg.from_user.id, {}).get("step") == "q_multi_on_exclusive_goto"
-)
-async def create_poll_q_multi_on_exclusive_goto(message: types.Message):
-    state = dp.data[message.from_user.id]
-    poll = state["poll"]
-    try:
-        goto_idx = int(message.text)
-        if goto_idx <= 0:
-            raise ValueError
-        poll["qbuf"]["on_exclusive"] = f"goto:{goto_idx}"
-        poll["qbuf"]["scale_min"] = None
-        poll["qbuf"]["scale_max"] = None
-        await finalize_question_and_maybe_next(message)
-    except ValueError:
-        await message.answer("Введіть коректний номер питання (додатне число).")
-
-
-@dp.message(
-    lambda msg: msg.from_user.id in ADMIN_IDS
-    and dp.data.get(msg.from_user.id, {}).get("step") == "q_scale_range"
-)
-async def create_poll_q_scale_range(message: types.Message):
-    state = dp.data[message.from_user.id]
-    poll = state["poll"]
-    text = message.text.replace(" ", "")
-    if "-" not in text:
-        await message.answer("Введіть діапазон у форматі мін-макс, наприклад: 1-5")
-        return
-    left, right = text.split("-", 1)
-    try:
-        s_min = int(left)
-        s_max = int(right)
-        if s_min >= s_max:
-            raise ValueError
-    except ValueError:
-        await message.answer("Діапазон некоректний. Приклад: 1-5 або 0-10.")
-        return
-
-    poll["qbuf"]["scale_min"] = s_min
-    poll["qbuf"]["scale_max"] = s_max
-    poll["qbuf"]["options"] = []
-    poll["qbuf"]["exclusive_option"] = None
-    poll["qbuf"]["on_exclusive"] = None
-    await finalize_question_and_maybe_next(message)
-
-
-async def finalize_question_and_maybe_next(message: types.Message):
-    """Допоміжна функція: додає питання в poll['questions'] і переходить далі або завершує опитування."""
-    state = dp.data[message.from_user.id]
-    poll = state["poll"]
-    q = {
-        "index": poll["qbuf"]["index"],
-        "kind": poll["qbuf"]["kind"],
-        "text": poll["qbuf"]["text"],
-        "options": poll["qbuf"].get("options", []),
-        "scale_min": poll["qbuf"].get("scale_min"),
-        "scale_max": poll["qbuf"].get("scale_max"),
-        "exclusive_option": poll["qbuf"].get("exclusive_option"),
-        "on_exclusive": poll["qbuf"].get("on_exclusive"),
-    }
-    poll["questions"].append(q)
-    poll["qidx"] += 1
-
-    if poll["qidx"] <= poll["n"]:
-        # наступне питання
-        state["step"] = "q_text"
-        await message.answer(f"Введіть текст питання №{poll['qidx']}:")
-    else:
-        # всі питання введені – зберігаємо в Polls
-        questions_json = json.dumps(poll["questions"], ensure_ascii=False)
-        existing_ids = polls_table.col_values(1)
-        try:
-            next_id = max(int(x) for x in existing_ids[1:] if x.isdigit()) + 1
-        except ValueError:
-            next_id = 1
-        polls_table.append_row([next_id, poll["title"], questions_json])
-        await message.answer(
-            f"Опитування '{poll['title']}' створено.\n"
-            f"Питань: {len(poll['questions'])}. Структура збережена в Polls.",
-            reply_markup=admin_menu(),
-        )
-        del dp.data[message.from_user.id]
-
-
-# ------------ КНОПКИ КОРИСТУВАЧА (заглушки, поки немає Етапу 2) ------------
-
-@dp.message(lambda msg: msg.text == "Почати опитування")
-async def user_start_poll(message: types.Message):
-    await message.answer(
-        "Проходження опитувань ще в розробці. Структура опитувань уже зберігається в Polls.",
-        reply_markup=user_menu(),
-    )
-
-
-@dp.message(lambda msg: msg.text == "Переглянути баланс")
-async def user_balance(message: types.Message):
-    await message.answer(
-        "Баланс буде рахуватися після додавання запису відповідей. Зараз реалізуємо логіку опитувань.",
-        reply_markup=user_menu(),
-    )
-
-
-# ------------ FALLBACK ------------
-
-@dp.message()
-async def fallback(message: types.Message):
-    logger.info("Fallback message from %s: %s", message.from_user.id, message.text)
-    await message.answer("Команда не розпізнана. Використовуйте меню або /start.")
-
-
-# ------------ ЗАПУСК ------------
-
-async def main():
-    logger.info("Bot starting (registration + poll creation stage 1)...")
-    try:
-        await dp.start_polling(bot)
-    except Exception as e:
-        logger.exception("Bot crashed with exception: %s", e)
-
-
-if __name__ == "__main__":
-    logger.info("main.py __name__ == '__main__', starting asyncio.run")
-    asyncio.run(main())
