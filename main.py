@@ -26,7 +26,7 @@ gs = gspread.authorize(creds)
 USERS_SHEET = "Users"
 users_table = gs.open(USERS_SHEET).sheet1
 
-POLLS_SHEET = "Polls"
+POLLS_SHEET = "Polls"  # структура: poll_id | title | reward | questions_json
 polls_table = gs.open(POLLS_SHEET).sheet1
 
 bot = Bot(token=API_TOKEN)
@@ -186,7 +186,7 @@ async def input_city_size(message: types.Message):
 
     await message.answer("Реєстрація завершена ✅", reply_markup=user_menu())
 
-# ---------- АДМІН: МЕНЮ + СТВОРЕННЯ ОПИТУВАННЯ (як на етапі 1) ----------
+# ---------- АДМІН МЕНЮ ----------
 
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
@@ -194,6 +194,8 @@ async def admin_panel(message: types.Message):
         await message.answer("Недостатньо прав.")
         return
     await message.answer("Адмін-меню:", reply_markup=admin_menu())
+
+# ---------- ЕТАП 1.1: СТВОРЕННЯ ОПИТУВАННЯ З ВИНАГОРОДОЮ ----------
 
 @dp.message(lambda m: m.from_user.id in ADMIN_IDS and m.text == "Створити опитування")
 async def create_poll_start(message: types.Message):
@@ -204,8 +206,21 @@ async def create_poll_start(message: types.Message):
 async def create_poll_set_title(message: types.Message):
     state = dp.data[message.from_user.id]
     state["poll"]["title"] = message.text.strip()
-    state["step"] = "count"
-    await message.answer("Скільки питань буде в опитуванні? Введіть число.")
+    state["step"] = "reward"
+    await message.answer("Вкажіть суму винагороди за проходження цього опитування (число, грн).")
+
+@dp.message(lambda m: m.from_user.id in ADMIN_IDS and dp.data.get(m.from_user.id, {}).get("step") == "reward")
+async def create_poll_set_reward(message: types.Message):
+    state = dp.data[message.from_user.id]
+    try:
+        reward = float(message.text.replace(",", "."))
+        if reward < 0:
+            raise ValueError
+        state["poll"]["reward"] = reward
+        state["step"] = "count"
+        await message.answer("Скільки питань буде в опитуванні? Введіть число.")
+    except ValueError:
+        await message.answer("Введіть коректну суму (наприклад: 10 або 15.5).")
 
 @dp.message(lambda m: m.from_user.id in ADMIN_IDS and dp.data.get(m.from_user.id, {}).get("step") == "count")
 async def create_poll_set_count(message: types.Message):
@@ -220,6 +235,9 @@ async def create_poll_set_count(message: types.Message):
         await message.answer("Введіть текст питання №1:")
     except ValueError:
         await message.answer("Введіть, будь ласка, додатне число.")
+
+# --- далі блоки створення питань такі самі, як були (q_text, q_kind, q_options, ...),
+# тільки в фіналізації додаємо reward у Polls.
 
 @dp.message(lambda m: m.from_user.id in ADMIN_IDS and dp.data.get(m.from_user.id, {}).get("step") == "q_text")
 async def create_poll_q_text(message: types.Message):
@@ -421,194 +439,31 @@ async def finalize_question_and_maybe_next(message: types.Message):
         await message.answer(f"Введіть текст питання №{poll['qidx']}:")
     else:
         questions_json = json.dumps(poll["questions"], ensure_ascii=False)
-        existing_ids = polls_table.col_values(1)
+        existing_ids = polls_table.get_all_values()
         try:
-            next_id = max(int(x) for x in existing_ids[1:] if x.isdigit()) + 1
-        except ValueError:
+            ids = [int(r[0]) for r in existing_ids[1:] if r and r[0].isdigit()]
+            next_id = max(ids) + 1 if ids else 1
+        except Exception:
             next_id = 1
-        polls_table.append_row([next_id, poll["title"], questions_json])
+        reward = poll.get("reward", 0)
+        polls_table.append_row([next_id, poll["title"], reward, questions_json])
         await message.answer(
-            f"Опитування '{poll['title']}' створено. Питань: {len(poll['questions'])}. Структура збережена в Polls.",
+            f"Опитування '{poll['title']}' створено.\n"
+            f"Винагорода: {reward} грн.\n"
+            f"Питань: {len(poll['questions'])}. Структура збережена в Polls.",
             reply_markup=admin_menu(),
         )
         del dp.data[message.from_user.id]
 
-# ---------- ЕТАП 2: ПРОХОДЖЕННЯ ОПИТУВАННЯ ----------
+# ---------- КНОПКИ КОРИСТУВАЧА (поки без змін логіки проходження/балансу) ----------
 
 @dp.message(lambda m: m.text == "Почати опитування")
 async def user_start_poll(message: types.Message):
-    # беремо список опитувань із Polls
-    all_rows = polls_table.get_all_values()
-    titles = [row[1] for row in all_rows[1:] if len(row) >= 2]
-    if not titles:
-        await message.answer("Немає доступних опитувань.", reply_markup=user_menu())
-        return
-    kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=t)] for t in titles],
-        resize_keyboard=True,
-    )
-    dp.data[message.from_user.id] = {"stage": "choose_poll"}
-    await message.answer("Оберіть опитування:", reply_markup=kb)
-
-@dp.message(lambda m: dp.data.get(m.from_user.id, {}).get("stage") == "choose_poll")
-async def user_choose_poll(message: types.Message):
-    title = message.text
-    all_rows = polls_table.get_all_values()
-    poll_row = None
-    for row in all_rows[1:]:
-        if len(row) >= 2 and row[1] == title:
-            poll_row = row
-            break
-    if not poll_row:
-        await message.answer("Таке опитування не знайдено. Спробуйте ще раз.", reply_markup=user_menu())
-        dp.data.pop(message.from_user.id, None)
-        return
-
-    questions = json.loads(poll_row[2])
-    dp.data[message.from_user.id] = {
-        "stage": "in_poll",
-        "poll_title": title,
-        "questions": questions,
-        "current_index": 1,
-        "answers": {},
-    }
-    await ask_next_question(message)
-
-async def ask_next_question(message: types.Message):
-    state = dp.data.get(message.from_user.id)
-    if not state:
-        await message.answer("Сесія опитування втрачена. Почніть заново.", reply_markup=user_menu())
-        return
-
-    questions = state["questions"]
-    idx = state["current_index"]
-
-    q = next((q for q in questions if q["index"] == idx), None)
-    if not q:
-        # немає питання з таким індексом — завершуємо
-        await finish_poll(message)
-        return
-
-    kind = q["kind"]
-    text = q["text"]
-    options = q.get("options") or []
-    kb = None
-
-    if kind in ["radio", "multi"]:
-        kb = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text=o)] for o in options],
-            resize_keyboard=True,
-        )
-        await message.answer(text, reply_markup=kb)
-    elif kind == "text":
-        await message.answer(text, reply_markup=ReplyKeyboardRemove())
-    elif kind == "scale":
-        s_min = q.get("scale_min", 1)
-        s_max = q.get("scale_max", 5)
-        row = [KeyboardButton(text=str(i)) for i in range(s_min, s_max + 1)]
-        kb = ReplyKeyboardMarkup(keyboard=[row], resize_keyboard=True)
-        await message.answer(text, reply_markup=kb)
-    else:
-        await message.answer(text, reply_markup=ReplyKeyboardRemove())
-
-@dp.message(lambda m: dp.data.get(m.from_user.id, {}).get("stage") == "in_poll")
-async def user_poll_answer(message: types.Message):
-    state = dp.data.get(message.from_user.id)
-    if not state:
-        await message.answer("Сесія опитування втрачена. Почніть заново.", reply_markup=user_menu())
-        return
-
-    user_id = message.from_user.id
-    idx = state["current_index"]
-    questions = state["questions"]
-    q = next((q for q in questions if q["index"] == idx), None)
-    if not q:
-        await finish_poll(message)
-        return
-
-    kind = q["kind"]
-    text = message.text
-
-    # валідація для scale
-    if kind == "scale":
-        try:
-            val = int(text)
-            s_min = q.get("scale_min", 1)
-            s_max = q.get("scale_max", 5)
-            if not (s_min <= val <= s_max):
-                raise ValueError
-        except ValueError:
-            await message.answer("Введіть число в межах шкали.")
-            return
-
-    # валідація для radio/multi
-    if kind in ["radio", "multi"]:
-        options = q.get("options") or []
-        if text not in options:
-            await message.answer("Оберіть одну з кнопок.")
-            return
-
-    # зберігаємо відповідь (для multi поки один вибір з клавіатури)
-    state["answers"][idx] = text
-
-    # логіка виключної опції для multi
-    if kind == "multi" and q.get("exclusive_option") and text == q["exclusive_option"]:
-        action = q.get("on_exclusive") or "next"
-        if action == "finish":
-            await finish_poll(message)
-            return
-        if action.startswith("goto:"):
-            try:
-                goto_idx = int(action.split(":", 1)[1])
-                state["current_index"] = goto_idx
-                await ask_next_question(message)
-                return
-            except ValueError:
-                pass  # якщо щось не так — просто далі
-
-    # звичайний перехід до наступного питання
-    state["current_index"] += 1
-    await ask_next_question(message)
-
-async def finish_poll(message: types.Message):
-    state = dp.data.get(message.from_user.id)
-    if not state:
-        await message.answer("Опитування завершено.", reply_markup=user_menu())
-        return
-
-    user_id = message.from_user.id
-    title = state["poll_title"]
-    answers = state["answers"]
-    questions = state["questions"]
-
-    # шукаємо/створюємо таблицю Answers_survey_<title> (ти можеш створити її вручну)
-    file_name = f"Answers_survey_{title}"
-    try:
-        ans_sheet = gs.open(file_name).sheet1
-    except gspread.SpreadsheetNotFound:
-        sh = gs.create(file_name)
-        sh.share(creds.service_account_email, perm_type="user", role="writer")
-        ans_sheet = sh.sheet1
-        header = ["user_id"] + [q["text"] for q in questions]
-        ans_sheet.append_row(header)
-
-    # збираємо рядок відповіді в порядку індексів питань
-    row = [user_id]
-    for q in questions:
-        val = answers.get(q["index"], "")
-        row.append(val)
-    ans_sheet.append_row(row)
-
-    await message.answer("Дякуємо! Ваші відповіді збережені.", reply_markup=user_menu())
-    dp.data.pop(message.from_user.id, None)
-
-# ---------- Баланс (заглушка) ----------
+    await message.answer("Модуль проходження опитувань підключимо на наступному етапі. Опитування вже можна створювати з винагородою.", reply_markup=user_menu())
 
 @dp.message(lambda m: m.text == "Переглянути баланс")
 async def user_balance(message: types.Message):
-    await message.answer("Баланс буде рахуватися після налаштування винагороди за опитування.", reply_markup=user_menu())
-
-# ---------- Fallback ----------
+    await message.answer("Підрахунок балансу за винагородами опитувань додамо на наступному етапі.", reply_markup=user_menu())
 
 @dp.message()
 async def fallback(message: types.Message):
@@ -616,7 +471,7 @@ async def fallback(message: types.Message):
     await message.answer("Команда не розпізнана. Використовуйте меню або /start.")
 
 async def main():
-    logger.info("Bot starting (registration + poll creation + poll passing)...")
+    logger.info("Bot starting (registration + poll creation with reward)...")
     try:
         await dp.start_polling(bot)
     except Exception as e:
