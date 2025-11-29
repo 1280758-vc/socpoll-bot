@@ -83,4 +83,100 @@ async def contact(message: types.Message):
         keyboard=[[KeyboardButton(text="Чоловік")], [KeyboardButton(text="Жінка")]],
         resize_keyboard=True,
     )
-    await message.answer("Ваша стать?", reply_markup
+    await message.answer("Ваша стать?", reply_markup=kb)
+
+@dp.message(lambda m: m.text in ["Чоловік", "Жінка"])
+async def input_sex(message: types.Message):
+    user_id = message.from_user.id
+    sex = message.text
+    vals = users_table.col_values(1)
+    if str(user_id) not in vals:
+        await message.answer("Спочатку натисніть /start і поділіться номером.")
+        return
+    row = vals.index(str(user_id)) + 1
+    users_table.update_cell(row, 3, sex)
+    logger.info("User %s sex saved: %s", user_id, sex)
+    await message.answer("Ваш рік народження?", reply_markup=ReplyKeyboardRemove())
+
+@dp.message(lambda m: m.text.isdigit() and 1920 < int(m.text) < 2020)
+async def input_birth(message: types.Message):
+    user_id = message.from_user.id
+    birth_year = message.text
+    vals = users_table.col_values(1)
+    if str(user_id) not in vals:
+        await message.answer("Спочатку натисніть /start і поділіться номером.")
+        return
+    row = vals.index(str(user_id)) + 1
+    users_table.update_cell(row, 4, birth_year)
+    logger.info("User %s birth_year saved: %s", user_id, birth_year)
+
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Середня")],
+            [KeyboardButton(text="Вища")],
+            [KeyboardButton(text="Учена ступінь")],
+        ],
+        resize_keyboard=True,
+    )
+    await message.answer("Ваша освіта?", reply_markup=kb)
+
+@dp.message(lambda m: m.text in ["Середня", "Вища", "Учена ступінь"])
+async def input_education(message: types.Message):
+    user_id = message.from_user.id
+    edu = message.text
+    vals = users_table.col_values(1)
+    if str(user_id) not in vals:
+        await message.answer("Спочатку натисніть /start і поділіться номером.")
+        return
+    row = vals.index(str(user_id)) + 1
+    users_table.update_cell(row, 5, edu)
+    logger.info("User %s education saved: %s", user_id, edu)
+
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Місто")], [KeyboardButton(text="Село")]],
+        resize_keyboard=True,
+    )
+    await message.answer("Місце проживання?", reply_markup=kb)
+
+@dp.message(lambda m: m.text in ["Місто", "Село"])
+async def input_residence_type(message: types.Message):
+    user_id = message.from_user.id
+    residence_type = message.text
+    vals = users_table.col_values(1)
+    if str(user_id) not in vals:
+        await message.answer("Спочатку натисніть /start і поділіться номером.")
+        return
+    row = vals.index(str(user_id)) + 1
+    users_table.update_cell(row, 6, residence_type)
+    logger.info("User %s residence type saved: %s", user_id, residence_type)
+
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="До 10 тис.")],
+            [KeyboardButton(text="10–50 тис.")],
+            [KeyboardButton(text="50–100 тис.")],
+            [KeyboardButton(text="100–500 тис.")],
+            [KeyboardButton(text="500 тис.–1 000 000")],
+            [KeyboardButton(text="Більше 1 000 000")],
+        ],
+        resize_keyboard=True,
+    )
+    await message.answer("Розмір населеного пункту?", reply_markup=kb)
+
+CITY_SIZES = [
+    "До 10 тис.",
+    "10–50 тис.",
+    "50–100 тис.",
+    "100–500 тис.",
+    "500 тис.–1 000 000",
+    "Більше 1 000 000",
+]
+
+@dp.message(lambda m: m.text in CITY_SIZES)
+async def input_city_size(message: types.Message):
+    user_id = message.from_user.id
+    city_size = message.text
+    vals = users_table.col_values(1)
+    if str(user_id) not in vals:
+        await message.answer("Спочатку натисніть /start і поділіться номером.")
+        return
