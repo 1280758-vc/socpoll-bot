@@ -39,8 +39,8 @@ def admin_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Створити опитування")],
-            [KeyboardButton(text="Оглянути/Редагувати анкету")],
             [KeyboardButton(text="Розіслати опитування")],
+            [KeyboardButton(text="Оглянути/Редагувати анкету")],
             [KeyboardButton(text="Експорт відповідей")],
             [KeyboardButton(text="Статистика")],
         ],
@@ -211,7 +211,7 @@ async def admin_panel(message: types.Message):
 @dp.message(lambda m: m.from_user.id in ADMIN_IDS and m.text == "Створити опитування")
 async def create_poll_start(message: types.Message):
     dp.data[message.from_user.id] = {"step": "code", "poll": {"questions": []}}
-    await message.answer("Введіть числовий код опитування (наприклад, 124):", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Введіть числовий код опитування (наприклад, 126):", reply_markup=ReplyKeyboardRemove())
 
 
 @dp.message(lambda m: m.from_user.id in ADMIN_IDS and dp.data.get(m.from_user.id, {}).get("step") == "code")
@@ -230,7 +230,7 @@ async def create_poll_set_title(message: types.Message):
     state = dp.data[message.from_user.id]
     state["poll"]["title"] = message.text.strip()
     state["step"] = "reward"
-    await message.answer("Вкажіть суму винагороди за це опитування (грн, можна з копійками).")
+    await message.answer("Вкажіть суму винагороди за це опитування (грн):")
 
 
 @dp.message(lambda m: m.from_user.id in ADMIN_IDS and dp.data.get(m.from_user.id, {}).get("step") == "reward")
@@ -509,7 +509,67 @@ async def finalize_question_and_maybe_next(message: types.Message):
         del dp.data[message.from_user.id]
 
 
-# ---------- ПРОХОДЖЕННЯ + ЗАПРОШЕННЯ КОДОМ + ОДИН РАЗ ----------
+# ---------- РОЗСИЛКА ЗАПРОШЕННЯ ----------
+
+@dp.message(lambda m: m.from_user.id in ADMIN_IDS and m.text == "Розіслати опитування")
+async def admin_broadcast_start(message: types.Message):
+    dp.data[message.from_user.id] = {"stage": "broadcast_code"}
+    await message.answer(
+        "Введіть код опитування, яке треба розіслати (наприклад, 126):",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+@dp.message(lambda m: m.from_user.id in ADMIN_IDS and dp.data.get(m.from_user.id, {}).get("stage") == "broadcast_code")
+async def admin_broadcast_send(message: types.Message):
+    code = message.text.strip()
+    if not code.isdigit():
+        await message.answer("Код має бути числом. Введіть ще раз.")
+        return
+
+    # Перевіряємо, чи існує таке опитування
+    rows = polls_table.get_all_values()
+    poll_row = None
+    for r in rows[1:]:
+        if len(r) >= 2 and r[1] == code:
+            poll_row = r
+            break
+
+    if not poll_row:
+        await message.answer("Опитування з таким кодом не знайдено.", reply_markup=admin_menu())
+        dp.data.pop(message.from_user.id, None)
+        return
+
+    title = poll_row[2] if len(poll_row) >= 3 else ""
+
+    # Беремо всіх користувачів з Users
+    users = users_table.col_values(1)[1:]  # пропускаємо заголовок
+    sent = 0
+    for uid in users:
+        try:
+            uid_int = int(uid)
+        except ValueError:
+            continue
+        try:
+            text = (
+                f"Вас запрошено до опитування:\n"
+                f"Код: {code}\n"
+                f"Назва: {title}\n\n"
+                f"Щоб пройти, натисніть 'Почати опитування' в меню бота і введіть цей код."
+            )
+            await bot.send_message(chat_id=uid_int, text=text, reply_markup=user_menu())
+            sent += 1
+        except Exception as e:
+            logger.warning("Failed to send invite to %s: %s", uid, e)
+
+    dp.data.pop(message.from_user.id, None)
+    await message.answer(
+        f"Розсилка завершена. Повідомлень надіслано: {sent}.",
+        reply_markup=admin_menu(),
+    )
+
+
+# ---------- ПРОХОДЖЕННЯ + ОДИН РАЗ ----------
 
 def get_poll_by_code(code: str):
     rows = polls_table.get_all_values()
@@ -527,7 +587,7 @@ def get_poll_by_code(code: str):
 async def user_start_poll(message: types.Message):
     dp.data[message.from_user.id] = {"stage": "enter_code"}
     await message.answer(
-        "Введіть код опитування, який ви отримали (наприклад, 124):",
+        "Введіть код опитування, який ви отримали (наприклад, 126):",
         reply_markup=ReplyKeyboardRemove(),
     )
 
@@ -545,7 +605,6 @@ async def user_enter_code(message: types.Message):
         dp.data.pop(message.from_user.id, None)
         return
 
-    # перевіряємо, чи вже проходив це опитування
     file_name = f"Answers_survey_{code}"
     try:
         ans_sheet = gs.open(file_name).sheet1
@@ -569,7 +628,6 @@ async def user_enter_code(message: types.Message):
             dp.data.pop(message.from_user.id, None)
             return
 
-    # все ок – запускаємо опитування
     dp.data[message.from_user.id] = {
         "stage": "in_poll",
         "poll_id": poll_id,
@@ -696,6 +754,17 @@ async def finish_poll(message: types.Message):
         )
         dp.data.pop(message.from_user.id, None)
         return
+
+    # Додаткова перевірка на повтор (захист навіть якщо користувач дойшов до кінця вдруге)
+    data = ans_sheet.get_all_values()
+    for r in data[1:]:
+        if r and str(r[0]) == str(user_id):
+            await message.answer(
+                "Ви вже проходили це опитування. Відповіді не були записані вдруге.",
+                reply_markup=user_menu(),
+            )
+            dp.data.pop(message.from_user.id, None)
+            return
 
     row = [user_id]
     for q in questions:
