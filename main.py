@@ -1,182 +1,50 @@
-import logging
-import asyncio
-import json
-
-import gspread
-from google.oauth2.service_account import Credentials
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-from aiogram.filters import Command
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-API_TOKEN = "8330526731:AAF6gnM2wovo2U_x7HVKd9YGn7hrxOajEsY"
-ADMIN_IDS = [383222956, 233536337]
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-CREDENTIALS_PATH = "/etc/secrets/credentials"
-
-creds = Credentials.from_service_account_file(CREDENTIALS_PATH, scopes=SCOPES)
-gs = gspread.authorize(creds)
-
-USERS_SHEET = "Users"
-users_table = gs.open(USERS_SHEET).sheet1
-
-POLLS_SHEET = "Polls"  # poll_id | title | reward | questions_json
-polls_table = gs.open(POLLS_SHEET).sheet1
-
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher()
-dp.data = {}
-
-def admin_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Створити опитування")],
-            [KeyboardButton(text="Оглянути/Редагувати анкету")],
-            [KeyboardButton(text="Розіслати опитування")],
-            [KeyboardButton(text="Експорт відповідей")],
-            [KeyboardButton(text="Статистика")],
-        ],
-        resize_keyboard=True,
-    )
-
-def user_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Почати опитування")],
-            [KeyboardButton(text="Переглянути баланс")],
-        ],
-        resize_keyboard=True,
-    )
-
-# ---------- РЕЄСТРАЦІЯ ----------
-
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    logger.info("Received /start from %s", message.from_user.id)
-    kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Поділитися номером", request_contact=True)]],
-        resize_keyboard=True,
-    )
-    await message.answer("👋 Вітаю! Поділіться номером для реєстрації:", reply_markup=kb)
-
-@dp.message(lambda m: m.contact is not None)
-async def contact(message: types.Message):
-    user_id = message.from_user.id
-    phone = message.contact.phone_number
-    logger.info("Got contact from %s: %s", user_id, phone)
-
-    vals = users_table.col_values(1)
-    if str(user_id) in vals:
-        await message.answer("Ви вже зареєстровані ✅", reply_markup=user_menu())
-        return
-
-    users_table.append_row([user_id, phone, "", "", "", "", ""])
-    logger.info("User %s added to Users sheet", user_id)
-
-    kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Чоловік")], [KeyboardButton(text="Жінка")]],
-        resize_keyboard=True,
-    )
-    await message.answer("Ваша стать?", reply_markup=kb)
-
-@dp.message(lambda m: m.text in ["Чоловік", "Жінка"])
-async def input_sex(message: types.Message):
-    user_id = message.from_user.id
-    sex = message.text
-    vals = users_table.col_values(1)
-    if str(user_id) not in vals:
-        await message.answer("Спочатку натисніть /start і поділіться номером.")
-        return
-    row = vals.index(str(user_id)) + 1
-    users_table.update_cell(row, 3, sex)
-    logger.info("User %s sex saved: %s", user_id, sex)
-    await message.answer("Ваш рік народження?", reply_markup=ReplyKeyboardRemove())
-
-@dp.message(lambda m: m.text.isdigit() and 1920 < int(m.text) < 2020)
-async def input_birth(message: types.Message):
-    user_id = message.from_user.id
-    birth_year = message.text
-    vals = users_table.col_values(1)
-    if str(user_id) not in vals:
-        await message.answer("Спочатку натисніть /start і поділіться номером.")
-        return
-    row = vals.index(str(user_id)) + 1
-    users_table.update_cell(row, 4, birth_year)
-    logger.info("User %s birth_year saved: %s", user_id, birth_year)
-
-    kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Середня")],
-            [KeyboardButton(text="Вища")],
-            [KeyboardButton(text="Учена ступінь")],
-        ],
-        resize_keyboard=True,
-    )
-    await message.answer("Ваша освіта?", reply_markup=kb)
-
-@dp.message(lambda m: m.text in ["Середня", "Вища", "Учена ступінь"])
-async def input_education(message: types.Message):
-    user_id = message.from_user.id
-    edu = message.text
-    vals = users_table.col_values(1)
-    if str(user_id) not in vals:
-        await message.answer("Спочатку натисніть /start і поділіться номером.")
-        return
-    row = vals.index(str(user_id)) + 1
-    users_table.update_cell(row, 5, edu)
-    logger.info("User %s education saved: %s", user_id, edu)
-
-    kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Місто")], [KeyboardButton(text="Село")]],
-        resize_keyboard=True,
-    )
-    await message.answer("Місце проживання?", reply_markup=kb)
-
-@dp.message(lambda m: m.text in ["Місто", "Село"])
-async def input_residence_type(message: types.Message):
-    user_id = message.from_user.id
-    residence_type = message.text
-    vals = users_table.col_values(1)
-    if str(user_id) not in vals:
-        await message.answer("Спочатку натисніть /start і поділіться номером.")
-        return
-    row = vals.index(str(user_id)) + 1
-    users_table.update_cell(row, 6, residence_type)
-    logger.info("User %s residence type saved: %s", user_id, residence_type)
-
-    kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="До 10 тис.")],
-            [KeyboardButton(text="10–50 тис.")],
-            [KeyboardButton(text="50–100 тис.")],
-            [KeyboardButton(text="100–500 тис.")],
-            [KeyboardButton(text="500 тис.–1 000 000")],
-            [KeyboardButton(text="Більше 1 000 000")],
-        ],
-        resize_keyboard=True,
-    )
-    await message.answer("Розмір населеного пункту?", reply_markup=kb)
-
-CITY_SIZES = [
-    "До 10 тис.",
-    "10–50 тис.",
-    "50–100 тис.",
-    "100–500 тис.",
-    "500 тис.–1 000 000",
-    "Більше 1 000 000",
-]
-
-@dp.message(lambda m: m.text in CITY_SIZES)
-async def input_city_size(message: types.Message):
-    user_id = message.from_user.id
-    city_size = message.text
-    vals = users_table.col_values(1)
-    if str(user_id) not in vals:
-        await message.answer("Спочатку натисніть /start і поділіться номером.")
-        return
+2025-11-29T07:51:39.700691183Z SyntaxError: '[' was never closed
+2025-11-29T07:53:09.588506119Z ==> Running 'python main.py'
+2025-11-29T07:53:09.621288191Z   File "/opt/render/project/src/main.py", line 155
+2025-11-29T07:53:09.621311552Z     keyboard=[
+2025-11-29T07:53:09.621315452Z              ^
+2025-11-29T07:53:09.621319342Z SyntaxError: '[' was never closed
+2025-11-29T07:55:52.150357984Z ==> Deploying...
+2025-11-29T07:55:59.525078205Z ==> Running 'python main.py'
+2025-11-29T07:55:59.603253411Z   File "/opt/render/project/src/main.py", line 155
+2025-11-29T07:55:59.603271502Z     keyboard=[
+2025-11-29T07:55:59.603274232Z              ^
+2025-11-29T07:55:59.603277042Z SyntaxError: '[' was never closed
+2025-11-29T07:56:14.443127671Z ==> Your service is live 🎉
+2025-11-29T07:56:23.924663386Z     await message.answer("Ваша стать?", reply_markup
+2025-11-29T07:56:23.924666266Z                         ^
+2025-11-29T07:56:23.924668816Z SyntaxError: '(' was never closed
+2025-11-29T07:56:39.537733089Z ==> Running 'python main.py'
+2025-11-29T07:56:39.615776111Z   File "/opt/render/project/src/main.py", line 86
+2025-11-29T07:56:39.615789571Z     await message.answer("Ваша стать?", reply_markup
+2025-11-29T07:56:39.615792591Z                         ^
+2025-11-29T07:56:39.615795031Z SyntaxError: '(' was never closed
+2025-11-29T07:57:11.505700395Z ==> Running 'python main.py'
+2025-11-29T07:57:11.591912259Z   File "/opt/render/project/src/main.py", line 86
+2025-11-29T07:57:11.59193138Z     await message.answer("Ваша стать?", reply_markup
+2025-11-29T07:57:11.5919347Z                         ^
+2025-11-29T07:57:11.59193784Z SyntaxError: '(' was never closed
+2025-11-29T07:58:03.621836793Z ==> Running 'python main.py'
+2025-11-29T07:58:03.653880746Z   File "/opt/render/project/src/main.py", line 86
+2025-11-29T07:58:03.653900966Z     await message.answer("Ваша стать?", reply_markup
+2025-11-29T07:58:03.653903726Z                         ^
+2025-11-29T07:58:03.653906097Z SyntaxError: '(' was never closed
+2025-11-29T07:59:36.585439264Z ==> Running 'python main.py'
+2025-11-29T07:59:36.650388482Z   File "/opt/render/project/src/main.py", line 86
+2025-11-29T07:59:36.650407593Z     await message.answer("Ваша стать?", reply_markup
+2025-11-29T07:59:36.650411353Z                         ^
+2025-11-29T07:59:36.650413773Z SyntaxError: '(' was never closed
+2025-11-29T08:00:25.857408181Z ==> Deploying...
+2025-11-29T08:00:57.602455665Z ==> Your service is live 🎉
+2025-11-29T08:00:57.983247709Z ==> Running 'python main.py'
+2025-11-29T08:01:10.00727012Z ==> Running 'python main.py'
+2025-11-29T08:01:34.33790482Z ==> Running 'python main.py'
+2025-11-29T08:02:05.326423771Z ==> Running 'python main.py'
+2025-11-29T08:03:09.455724306Z ==> Running 'python main.py'
+2025-11-29T08:04:42.260626936Z ==> Running 'python main.py'
+2025-11-29T08:07:43.523335898Z ==> Running 'python main.py'
+2025-11-29T08:13:01.235089598Z ==> Running 'python main.py'
+2025-11-29T08:18:18.337861588Z ==> Running 'python main.py'
+2025-11-29T08:23:31.342252168Z ==> Running 'python main.py'
+2025-11-29T08:28:41.321587891Z ==> Running 'python main.py'
+2025-11-29T08:34:01.402756684Z ==> Running 'python main.py'
