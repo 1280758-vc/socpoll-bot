@@ -26,7 +26,8 @@ gs = gspread.authorize(creds)
 USERS_SHEET = "Users"
 users_table = gs.open(USERS_SHEET).sheet1
 
-POLLS_SHEET = "Polls"  # poll_id | title | reward | questions_json
+# Polls: poll_id | code | title | reward | questions_json
+POLLS_SHEET = "Polls"
 polls_table = gs.open(POLLS_SHEET).sheet1
 
 bot = Bot(token=API_TOKEN)
@@ -197,7 +198,7 @@ async def input_city_size(message: types.Message):
     await message.answer("Реєстрація завершена ✅", reply_markup=user_menu())
 
 
-# ---------- АДМІН: ОПИТУВАННЯ З ВИНАГОРОДОЮ ----------
+# ---------- АДМІН: ОПИТУВАННЯ (code + title + reward) ----------
 
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
@@ -209,8 +210,19 @@ async def admin_panel(message: types.Message):
 
 @dp.message(lambda m: m.from_user.id in ADMIN_IDS and m.text == "Створити опитування")
 async def create_poll_start(message: types.Message):
-    dp.data[message.from_user.id] = {"step": "title", "poll": {"questions": []}}
-    await message.answer("Введіть назву опитування:", reply_markup=ReplyKeyboardRemove())
+    dp.data[message.from_user.id] = {"step": "code", "poll": {"questions": []}}
+    await message.answer("Введіть числовий код опитування (наприклад, 124):", reply_markup=ReplyKeyboardRemove())
+
+
+@dp.message(lambda m: m.from_user.id in ADMIN_IDS and dp.data.get(m.from_user.id, {}).get("step") == "code")
+async def create_poll_set_code(message: types.Message):
+    state = dp.data[message.from_user.id]
+    if not message.text.isdigit():
+        await message.answer("Код має бути числом. Введіть ще раз.")
+        return
+    state["poll"]["code"] = message.text.strip()
+    state["step"] = "title"
+    await message.answer("Введіть текстову назву опитування (для себе):")
 
 
 @dp.message(lambda m: m.from_user.id in ADMIN_IDS and dp.data.get(m.from_user.id, {}).get("step") == "title")
@@ -218,7 +230,7 @@ async def create_poll_set_title(message: types.Message):
     state = dp.data[message.from_user.id]
     state["poll"]["title"] = message.text.strip()
     state["step"] = "reward"
-    await message.answer("Вкажіть суму винагороди за проходження цього опитування (число, грн).")
+    await message.answer("Вкажіть суму винагороди за це опитування (грн, можна з копійками).")
 
 
 @dp.message(lambda m: m.from_user.id in ADMIN_IDS and dp.data.get(m.from_user.id, {}).get("step") == "reward")
@@ -482,10 +494,14 @@ async def finalize_question_and_maybe_next(message: types.Message):
             next_id = max(ids) + 1 if ids else 1
         except Exception:
             next_id = 1
+
+        code = poll["code"]
+        title = poll["title"]
         reward = poll.get("reward", 0)
-        polls_table.append_row([next_id, poll["title"], reward, questions_json])
+
+        polls_table.append_row([next_id, code, title, reward, questions_json])
         await message.answer(
-            f"Опитування '{poll['title']}' створено.\n"
+            f"Опитування '{title}' (код {code}) створено.\n"
             f"Винагорода: {reward} грн.\n"
             f"Питань: {len(poll['questions'])}.",
             reply_markup=admin_menu(),
@@ -493,46 +509,71 @@ async def finalize_question_and_maybe_next(message: types.Message):
         del dp.data[message.from_user.id]
 
 
-# ---------- ПРОХОДЖЕННЯ + БАЛАНС ----------
+# ---------- ПРОХОДЖЕННЯ + ЗАПРОШЕННЯ КОДОМ + ОДИН РАЗ ----------
 
-def get_poll_by_title(title: str):
+def get_poll_by_code(code: str):
     rows = polls_table.get_all_values()
     for row in rows[1:]:
-        if len(row) >= 4 and row[1] == title:
+        if len(row) >= 5 and row[1] == code:
             poll_id = int(row[0])
-            reward = float(row[2]) if row[2] else 0.0
-            questions = json.loads(row[3])
-            return poll_id, reward, questions
-    return None, 0.0, []
+            title = row[2]
+            reward = float(row[3]) if row[3] else 0.0
+            questions = json.loads(row[4])
+            return poll_id, title, reward, questions
+    return None, "", 0.0, []
 
 
 @dp.message(lambda m: m.text == "Почати опитування")
 async def user_start_poll(message: types.Message):
-    rows = polls_table.get_all_values()
-    titles = [r[1] for r in rows[1:] if len(r) >= 2]
-    if not titles:
-        await message.answer("Немає доступних опитувань.", reply_markup=user_menu())
-        return
-    kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=t)] for t in titles],
-        resize_keyboard=True,
+    dp.data[message.from_user.id] = {"stage": "enter_code"}
+    await message.answer(
+        "Введіть код опитування, який ви отримали (наприклад, 124):",
+        reply_markup=ReplyKeyboardRemove(),
     )
-    dp.data[message.from_user.id] = {"stage": "choose_poll"}
-    await message.answer("Оберіть опитування:", reply_markup=kb)
 
 
-@dp.message(lambda m: dp.data.get(m.from_user.id, {}).get("stage") == "choose_poll")
-async def user_choose_poll(message: types.Message):
-    title = message.text
-    poll_id, reward, questions = get_poll_by_title(title)
+@dp.message(lambda m: dp.data.get(m.from_user.id, {}).get("stage") == "enter_code")
+async def user_enter_code(message: types.Message):
+    code = message.text.strip()
+    if not code.isdigit():
+        await message.answer("Код має бути числом. Спробуйте ще раз.")
+        return
+
+    poll_id, title, reward, questions = get_poll_by_code(code)
     if not questions:
-        await message.answer("Опитування не знайдено або воно пошкоджене.", reply_markup=user_menu())
+        await message.answer("Опитування з таким кодом не знайдено.", reply_markup=user_menu())
         dp.data.pop(message.from_user.id, None)
         return
 
+    # перевіряємо, чи вже проходив це опитування
+    file_name = f"Answers_survey_{code}"
+    try:
+        ans_sheet = gs.open(file_name).sheet1
+    except gspread.SpreadsheetNotFound:
+        await message.answer(
+            "Технічна помилка: не знайдено таблицю для цього опитування.\n"
+            f"Створи в Google Drive таблицю '{file_name}' і дай боту права редактора.",
+            reply_markup=user_menu(),
+        )
+        dp.data.pop(message.from_user.id, None)
+        return
+
+    user_id = message.from_user.id
+    data = ans_sheet.get_all_values()
+    for r in data[1:]:
+        if r and str(r[0]) == str(user_id):
+            await message.answer(
+                "Ви вже проходили це опитування і не можете пройти його вдруге.",
+                reply_markup=user_menu(),
+            )
+            dp.data.pop(message.from_user.id, None)
+            return
+
+    # все ок – запускаємо опитування
     dp.data[message.from_user.id] = {
         "stage": "in_poll",
         "poll_id": poll_id,
+        "poll_code": code,
         "poll_title": title,
         "reward": reward,
         "questions": questions,
@@ -638,18 +679,19 @@ async def finish_poll(message: types.Message):
         return
 
     user_id = message.from_user.id
+    code = state["poll_code"]
     title = state["poll_title"]
     questions = state["questions"]
     answers = state["answers"]
     reward = state.get("reward", 0.0)
 
-    file_name = f"Answers_survey_{title}"
+    file_name = f"Answers_survey_{code}"
     try:
         ans_sheet = gs.open(file_name).sheet1
     except gspread.SpreadsheetNotFound:
         await message.answer(
-            "Технічна помилка: не знайдено таблицю для збереження відповідей.\n"
-            f"Створи в Google Drive таблицю з назвою '{file_name}' і дай боту права редактора.",
+            "Технічна помилка: не знайдено таблицю для цього опитування.\n"
+            f"Створи в Google Drive таблицю '{file_name}' і дай боту права редактора.",
             reply_markup=user_menu(),
         )
         dp.data.pop(message.from_user.id, None)
@@ -666,6 +708,7 @@ async def finish_poll(message: types.Message):
 
     await message.answer(
         f"Дякуємо! Ваші відповіді збережені.\n"
+        f"Опитування: {title} (код {code}).\n"
         f"Винагорода за це опитування: {reward} грн.\n"
         f"Ваш загальний баланс: {total_reward} грн.",
         reply_markup=user_menu(),
