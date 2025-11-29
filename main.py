@@ -4,8 +4,15 @@ import json
 
 import gspread
 from google.oauth2.service_account import Credentials
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardRemove,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+)
 from aiogram.filters import Command
 
 logging.basicConfig(level=logging.INFO)
@@ -509,7 +516,7 @@ async def finalize_question_and_maybe_next(message: types.Message):
         del dp.data[message.from_user.id]
 
 
-# ---------- РОЗСИЛКА ЗАПРОШЕННЯ ----------
+# ---------- РОЗСИЛКА ЗАПРОШЕННЯ (INLINE КНОПКИ) ----------
 
 @dp.message(lambda m: m.from_user.id in ADMIN_IDS and m.text == "Розіслати опитування")
 async def admin_broadcast_start(message: types.Message):
@@ -527,7 +534,6 @@ async def admin_broadcast_send(message: types.Message):
         await message.answer("Код має бути числом. Введіть ще раз.")
         return
 
-    # Перевіряємо, чи існує таке опитування
     rows = polls_table.get_all_values()
     poll_row = None
     for r in rows[1:]:
@@ -541,9 +547,9 @@ async def admin_broadcast_send(message: types.Message):
         return
 
     title = poll_row[2] if len(poll_row) >= 3 else ""
+    reward = poll_row[3] if len(poll_row) >= 4 else "0"
 
-    # Беремо всіх користувачів з Users
-    users = users_table.col_values(1)[1:]  # пропускаємо заголовок
+    users = users_table.col_values(1)[1:]
     sent = 0
     for uid in users:
         try:
@@ -552,12 +558,29 @@ async def admin_broadcast_send(message: types.Message):
             continue
         try:
             text = (
-                f"Вас запрошено до опитування:\n"
+                "Вас запрошено до опитування:\n"
                 f"Код: {code}\n"
-                f"Назва: {title}\n\n"
-                f"Щоб пройти, натисніть 'Почати опитування' в меню бота і введіть цей код."
+                f"Назва: {title}\n"
+                f"Винагорода: {reward} грн.\n\n"
+                "Натисніть кнопку нижче, щоб почати або відмовитися."
             )
-            await bot.send_message(chat_id=uid_int, text=text, reply_markup=user_menu())
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Почати опитування",
+                            callback_data=f"start_poll:{code}",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="Відмовитися",
+                            callback_data=f"decline_poll:{code}",
+                        )
+                    ],
+                ]
+            )
+            await bot.send_message(chat_id=uid_int, text=text, reply_markup=kb)
             sent += 1
         except Exception as e:
             logger.warning("Failed to send invite to %s: %s", uid, e)
@@ -569,7 +592,7 @@ async def admin_broadcast_send(message: types.Message):
     )
 
 
-# ---------- ПРОХОДЖЕННЯ + ОДИН РАЗ ----------
+# ---------- ПРОХОДЖЕННЯ ПО INLINE-КНОПЦІ + ОДИН РАЗ ----------
 
 def get_poll_by_code(code: str):
     rows = polls_table.get_all_values()
@@ -583,52 +606,40 @@ def get_poll_by_code(code: str):
     return None, "", 0.0, []
 
 
-@dp.message(lambda m: m.text == "Почати опитування")
-async def user_start_poll(message: types.Message):
-    dp.data[message.from_user.id] = {"stage": "enter_code"}
-    await message.answer(
-        "Введіть код опитування, який ви отримали (наприклад, 126):",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+@dp.callback_query(F.data.startswith("decline_poll:"))
+async def cb_decline_poll(callback: CallbackQuery):
+    await callback.answer("Добре, це опитування можна пройти пізніше.")
+    await callback.message.edit_reply_markup(reply_markup=None)
 
 
-@dp.message(lambda m: dp.data.get(m.from_user.id, {}).get("stage") == "enter_code")
-async def user_enter_code(message: types.Message):
-    code = message.text.strip()
-    if not code.isdigit():
-        await message.answer("Код має бути числом. Спробуйте ще раз.")
-        return
+@dp.callback_query(F.data.startswith("start_poll:"))
+async def cb_start_poll(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    code = callback.data.split(":", 1)[1]
 
     poll_id, title, reward, questions = get_poll_by_code(code)
     if not questions:
-        await message.answer("Опитування з таким кодом не знайдено.", reply_markup=user_menu())
-        dp.data.pop(message.from_user.id, None)
+        await callback.answer("Опитування не знайдено.", show_alert=True)
         return
 
     file_name = f"Answers_survey_{code}"
     try:
         ans_sheet = gs.open(file_name).sheet1
     except gspread.SpreadsheetNotFound:
-        await message.answer(
-            "Технічна помилка: не знайдено таблицю для цього опитування.\n"
-            f"Створи в Google Drive таблицю '{file_name}' і дай боту права редактора.",
-            reply_markup=user_menu(),
+        await callback.answer(
+            "Технічна помилка: немає таблиці для цього опитування.", show_alert=True
         )
-        dp.data.pop(message.from_user.id, None)
         return
 
-    user_id = message.from_user.id
     data = ans_sheet.get_all_values()
     for r in data[1:]:
         if r and str(r[0]) == str(user_id):
-            await message.answer(
-                "Ви вже проходили це опитування і не можете пройти його вдруге.",
-                reply_markup=user_menu(),
+            await callback.answer(
+                "Ви вже проходили це опитування.", show_alert=True
             )
-            dp.data.pop(message.from_user.id, None)
             return
 
-    dp.data[message.from_user.id] = {
+    dp.data[user_id] = {
         "stage": "in_poll",
         "poll_id": poll_id,
         "poll_code": code,
@@ -638,42 +649,12 @@ async def user_enter_code(message: types.Message):
         "current_index": 1,
         "answers": {},
     }
-    await ask_next_question(message)
 
-
-async def ask_next_question(message: types.Message):
-    state = dp.data.get(message.from_user.id)
-    if not state:
-        await message.answer("Сесія опитування втрачена. Почніть заново.", reply_markup=user_menu())
-        return
-
-    questions = state["questions"]
-    idx = state["current_index"]
-    q = next((q for q in questions if q.get("index") == idx), None)
-    if not q:
-        await finish_poll(message)
-        return
-
-    kind = q["kind"]
-    text = q["text"]
-    options = q.get("options") or []
-
-    if kind in ["radio", "multi"]:
-        kb = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text=o)] for o in options],
-            resize_keyboard=True,
-        )
-        await message.answer(text, reply_markup=kb)
-    elif kind == "text":
-        await message.answer(text, reply_markup=ReplyKeyboardRemove())
-    elif kind == "scale":
-        s_min = q.get("scale_min", 1)
-        s_max = q.get("scale_max", 5)
-        row = [KeyboardButton(text=str(i)) for i in range(s_min, s_max + 1)]
-        kb = ReplyKeyboardMarkup(keyboard=[row], resize_keyboard=True)
-        await message.answer(text, reply_markup=kb)
-    else:
-        await message.answer(text, reply_markup=ReplyKeyboardRemove())
+    await callback.answer()
+    await callback.message.answer(
+        f"Починаємо опитування: {title} (код {code}).", reply_markup=user_menu()
+    )
+    await ask_next_question(callback.message)
 
 
 @dp.message(lambda m: dp.data.get(m.from_user.id, {}).get("stage") == "in_poll")
@@ -730,6 +711,41 @@ async def user_poll_answer(message: types.Message):
     await ask_next_question(message)
 
 
+async def ask_next_question(message: types.Message):
+    state = dp.data.get(message.from_user.id)
+    if not state:
+        await message.answer("Сесія опитування втрачена. Почніть заново.", reply_markup=user_menu())
+        return
+
+    questions = state["questions"]
+    idx = state["current_index"]
+    q = next((q for q in questions if q.get("index") == idx), None)
+    if not q:
+        await finish_poll(message)
+        return
+
+    kind = q["kind"]
+    text = q["text"]
+    options = q.get("options") or []
+
+    if kind in ["radio", "multi"]:
+        kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=o)] for o in options],
+            resize_keyboard=True,
+        )
+        await message.answer(text, reply_markup=kb)
+    elif kind == "text":
+        await message.answer(text, reply_markup=ReplyKeyboardRemove())
+    elif kind == "scale":
+        s_min = q.get("scale_min", 1)
+        s_max = q.get("scale_max", 5)
+        row = [KeyboardButton(text=str(i)) for i in range(s_min, s_max + 1)]
+        kb = ReplyKeyboardMarkup(keyboard=[row], resize_keyboard=True)
+        await message.answer(text, reply_markup=kb)
+    else:
+        await message.answer(text, reply_markup=ReplyKeyboardRemove())
+
+
 async def finish_poll(message: types.Message):
     state = dp.data.get(message.from_user.id)
     if not state:
@@ -755,12 +771,11 @@ async def finish_poll(message: types.Message):
         dp.data.pop(message.from_user.id, None)
         return
 
-    # Додаткова перевірка на повтор (захист навіть якщо користувач дойшов до кінця вдруге)
     data = ans_sheet.get_all_values()
     for r in data[1:]:
         if r and str(r[0]) == str(user_id):
             await message.answer(
-                "Ви вже проходили це опитування. Відповіді не були записані вдруге.",
+                "Ви вже проходили це опитування. Відповіді вдруге не збережені.",
                 reply_markup=user_menu(),
             )
             dp.data.pop(message.from_user.id, None)
@@ -793,13 +808,14 @@ async def calculate_user_balance(user_id: int) -> float:
         data = sh.get_all_values()
         if not data or len(data[0]) < 2:
             continue
-        reward_col = len(data[0])
+        # припускаємо, що останній стовпчик завжди reward
+        reward_col = len(data[0]) - 1
         for r in data[1:]:
             if not r:
                 continue
             if str(r[0]) == str(user_id):
                 try:
-                    total += float(r[reward_col - 1]) if r[reward_col - 1] else 0.0
+                    total += float(r[reward_col]) if len(r) > reward_col and r[reward_col] else 0.0
                 except ValueError:
                     continue
     return total
