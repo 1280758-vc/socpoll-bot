@@ -18,7 +18,7 @@ from aiogram.filters import Command
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-API_TOKEN = "8330526731:AAF6gnM2wovo2U_x7HVKd9YGn7hrxOajEsY"
+API_TOKEN = "8330526731:AAEzeStk08GKV-ETRmLnERadgtyEfgldqCE"
 ADMIN_IDS = [383222956, 233536337]
 
 SCOPES = [
